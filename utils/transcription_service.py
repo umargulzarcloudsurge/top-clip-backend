@@ -1,0 +1,464 @@
+import os
+import logging
+import asyncio
+import time
+from typing import List, Dict, Any, Optional
+import tempfile
+from pydub import AudioSegment
+
+try:
+    import openai
+    if hasattr(openai, '__version__') and openai.__version__.startswith('1.'):
+        CLIENT_TYPE = 'v1'
+    else:
+        CLIENT_TYPE = 'v0'
+except ImportError:
+    openai = None
+    CLIENT_TYPE = None
+
+logger = logging.getLogger(__name__)
+
+class TranscriptionService:
+    def __init__(self):
+        logger.info("🔧 Initializing TranscriptionService...")
+        
+        self.client = None
+        self.http_client = None
+        self.temp_dir = os.getenv('TEMP_DIR', 'temp')
+        os.makedirs(self.temp_dir, exist_ok=True)
+        
+        api_key = os.getenv('OPENAI_API_KEY')
+        
+        if not api_key:
+            logger.error("❌ OPENAI_API_KEY not found")
+            raise ValueError("OPENAI_API_KEY environment variable is required")
+        
+        if not openai:
+            logger.error("❌ OpenAI library not installed")
+            raise ImportError("OpenAI library is required. Install with: pip install openai")
+        
+        try:
+            if CLIENT_TYPE == 'v1':
+                import httpx
+                import certifi
+                
+                # Create robust HTTP client with proper SSL and timeout settings
+                self.http_client = httpx.Client(
+                    verify=certifi.where(),
+                    timeout=httpx.Timeout(60.0, connect=10.0),  # 60s total, 10s connect
+                    limits=httpx.Limits(
+                        max_connections=5,
+                        max_keepalive_connections=2,
+                        keepalive_expiry=30.0
+                    )
+                )
+                
+                self.client = openai.OpenAI(
+                    api_key=api_key,
+                    http_client=self.http_client,
+                    max_retries=3,
+                    timeout=60.0
+                )
+                logger.info("✅ OpenAI v1.x client initialized with robust settings")
+            elif CLIENT_TYPE == 'v0':
+                openai.api_key = api_key
+                self.client = openai
+                logger.info("✅ OpenAI v0.x client initialized")
+            else:
+                raise ValueError("Unable to determine OpenAI library version")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize OpenAI client: {str(e)}")
+            raise
+    
+    def __del__(self):
+        """Cleanup HTTP client on destruction"""
+        if hasattr(self, 'http_client') and self.http_client:
+            try:
+                self.http_client.close()
+            except:
+                pass
+    
+    async def _ensure_connection_health(self):
+        """Ensure the connection is healthy before making requests"""
+        try:
+            # Quick health check - list models with short timeout
+            def _health_check():
+                models = list(self.client.models.list())
+                return len(models) > 0
+            
+            healthy = await asyncio.get_event_loop().run_in_executor(None, _health_check)
+            if not healthy:
+                logger.warning("⚠️ Connection health check failed")
+                return False
+            
+            logger.debug("✅ Connection health check passed")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Connection health check error: {str(e)}")
+            return False
+    
+    async def transcribe_audio(self, audio_path: str, language: str = "en") -> Dict[str, Any]:
+        """Transcribe audio file using OpenAI Whisper API"""
+        try:
+            if not self.client:
+                raise ValueError("OpenAI client not initialized")
+            
+            # Check connection health before starting
+            logger.info("🔍 Checking connection health...")
+            if not await self._ensure_connection_health():
+                logger.warning("⚠️ Connection health check failed, proceeding anyway...")
+            
+            logger.info(f"🎙️ Transcribing: {audio_path}")
+            
+            # Validate file
+            if not os.path.exists(audio_path):
+                raise FileNotFoundError(f"Audio file not found: {audio_path}")
+            
+            file_size = os.path.getsize(audio_path)
+            logger.info(f"📁 File size: {file_size / (1024*1024):.1f} MB")
+            
+            # Extract audio if needed
+            audio_file_path = await self._prepare_audio(audio_path)
+            
+            # Split if too large
+            audio_chunks = await self._split_audio_if_needed(audio_file_path)
+            
+            # Transcribe all chunks
+            all_segments = []
+            all_words = []
+            current_offset = 0
+            
+            for i, chunk_path in enumerate(audio_chunks):
+                logger.info(f"🎙️ Transcribing chunk {i + 1}/{len(audio_chunks)}")
+                
+                chunk_result = await self._transcribe_chunk(chunk_path, language)
+                
+                if chunk_result:
+                    # Adjust timestamps
+                    for segment in chunk_result.get('segments', []):
+                        segment['start'] += current_offset
+                        segment['end'] += current_offset
+                        
+                        # Adjust word timestamps
+                        if 'words' in segment:
+                            for word in segment['words']:
+                                word['start'] += current_offset
+                                word['end'] += current_offset
+                        
+                        all_segments.append(segment)
+                    
+                    # Handle top-level words
+                    for word in chunk_result.get('words', []):
+                        word['start'] += current_offset
+                        word['end'] += current_offset
+                        all_words.append(word)
+                    
+                    # Update offset
+                    chunk_duration = await self._get_audio_duration(chunk_path)
+                    current_offset += chunk_duration
+                
+                # Cleanup chunk
+                if chunk_path != audio_file_path:
+                    self._cleanup_file(chunk_path)
+            
+            # Cleanup extracted audio
+            if audio_file_path != audio_path:
+                self._cleanup_file(audio_file_path)
+            
+            # Build final result
+            result = {
+                'text': " ".join([seg['text'] for seg in all_segments]),
+                'segments': all_segments,
+                'words': all_words,
+                'language': language
+            }
+            
+            logger.info(f"✅ Transcription complete: {len(all_segments)} segments, {len(all_words)} words")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Transcription error: {str(e)}")
+            raise
+    
+    async def _prepare_audio(self, video_path: str) -> str:
+        """Extract audio from video if needed"""
+        try:
+            # Check if already audio
+            if video_path.lower().endswith(('.mp3', '.wav', '.m4a', '.aac')):
+                return video_path
+            
+            logger.info("🎵 Extracting audio from video")
+            
+            def _extract():
+                audio = AudioSegment.from_file(video_path)
+                audio_path = os.path.join(self.temp_dir, f"audio_{os.getpid()}.wav")
+                
+                # Convert to mono 16kHz for optimal Whisper performance
+                audio = audio.set_channels(1)
+                audio = audio.set_frame_rate(16000)
+                audio.export(audio_path, format="wav")
+                
+                return audio_path
+            
+            return await asyncio.get_event_loop().run_in_executor(None, _extract)
+            
+        except Exception as e:
+            logger.error(f"❌ Audio extraction error: {str(e)}")
+            raise
+    
+    async def _split_audio_if_needed(self, audio_path: str, max_size_mb: int = 24) -> List[str]:
+        """Split audio into chunks if too large"""
+        try:
+            file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+            
+            if file_size_mb <= max_size_mb:
+                return [audio_path]
+            
+            logger.info(f"✂️ Splitting audio ({file_size_mb:.1f} MB > {max_size_mb} MB)")
+            
+            def _split():
+                audio = AudioSegment.from_file(audio_path)
+                chunk_duration_ms = int((max_size_mb / file_size_mb) * len(audio) * 0.9)
+                
+                chunks = []
+                for i in range(0, len(audio), chunk_duration_ms):
+                    chunk = audio[i:i + chunk_duration_ms]
+                    chunk_path = os.path.join(self.temp_dir, f"chunk_{os.getpid()}_{len(chunks)}.wav")
+                    chunk.export(chunk_path, format="wav")
+                    chunks.append(chunk_path)
+                
+                return chunks
+            
+            return await asyncio.get_event_loop().run_in_executor(None, _split)
+            
+        except Exception as e:
+            logger.error(f"❌ Audio split error: {str(e)}")
+            return [audio_path]
+    
+    async def _transcribe_chunk(self, audio_path: str, language: str) -> Dict[str, Any]:
+        """Transcribe a single audio chunk with retry logic"""
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"🎙️ Transcription attempt {attempt + 1}/{max_retries}")
+                
+                def _transcribe():
+                    with open(audio_path, 'rb') as audio_file:
+                        if CLIENT_TYPE == 'v1':
+                            response = self.client.audio.transcriptions.create(
+                                model="whisper-1",
+                                file=audio_file,
+                                language=language,
+                                response_format="verbose_json",
+                                timestamp_granularities=["word", "segment"]
+                            )
+                        
+                        # Process v1 response
+                        segments = []
+                        words = []
+                        
+                        for segment in response.segments:
+                            seg_data = {
+                                'start': segment.start,
+                                'end': segment.end,
+                                'text': segment.text,
+                                'words': []
+                            }
+                            
+                            # Add word data to segment if available
+                            if hasattr(segment, 'words'):
+                                for word in segment.words:
+                                    word_data = {
+                                        'start': word.start,
+                                        'end': word.end,
+                                        'text': word.word,
+                                        'word': word.word
+                                    }
+                                    seg_data['words'].append(word_data)
+                                    words.append(word_data)
+                            
+                            segments.append(seg_data)
+                        
+                        # Also collect top-level words if available
+                        if hasattr(response, 'words') and response.words:
+                            for word in response.words:
+                                words.append({
+                                    'start': word.start,
+                                    'end': word.end,
+                                    'text': word.word,
+                                    'word': word.word
+                                })
+                        
+                        return {
+                            'text': response.text,
+                            'segments': segments,
+                            'words': words
+                        }
+                
+                # Add timeout protection to transcription
+                return await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, _transcribe),
+                    timeout=120  # 2 minute timeout per chunk
+                )
+                
+            except asyncio.TimeoutError:
+                logger.warning(f"⚠️ Transcription chunk timed out on attempt {attempt + 1}")
+                if attempt < max_retries - 1:
+                    logger.info(f"🔄 Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    logger.error(f"❌ Transcription chunk timed out after {max_retries} attempts")
+                    raise Exception("Transcription timed out after multiple attempts")
+            except Exception as e:
+                error_str = str(e).lower()
+                
+                # Check if it's a retryable error
+                retryable_errors = [
+                    'ssl', 'connection', 'timeout', 'network', 'read error',
+                    'bad record mac', 'connection reset', 'connection aborted'
+                ]
+                
+                is_retryable = any(err in error_str for err in retryable_errors)
+                
+                if attempt < max_retries - 1 and is_retryable:
+                    logger.warning(f"⚠️ Retryable error on attempt {attempt + 1}: {str(e)}")
+                    logger.info(f"🔄 Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    logger.error(f"❌ Chunk transcription error (attempt {attempt + 1}): {str(e)}")
+                    raise
+    
+    async def _get_audio_duration(self, audio_path: str) -> float:
+        """Get audio duration in seconds"""
+        try:
+            def _get_duration():
+                audio = AudioSegment.from_file(audio_path)
+                return len(audio) / 1000.0
+            
+            return await asyncio.get_event_loop().run_in_executor(None, _get_duration)
+            
+        except Exception as e:
+            logger.error(f"❌ Duration error: {str(e)}")
+            return 0.0
+    
+    def _cleanup_file(self, file_path: str):
+        """Clean up temporary file"""
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.debug(f"🗑️ Cleaned: {file_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ Cleanup failed: {str(e)}")
+    
+    def find_quotable_moments(self, transcript: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Find quotable moments in transcript"""
+        quotable_moments = []
+        
+        try:
+            for segment in transcript.get('segments', []):
+                text = segment.get('text', '').strip()
+                if not text:
+                    continue
+                
+                score = 0
+                word_count = len(text.split())
+                
+                # Scoring logic
+                if 5 <= word_count <= 15:
+                    score += 20
+                if text.endswith('?'):
+                    score += 15
+                if text.endswith('!'):
+                    score += 10
+                
+                # Check for emotional words
+                emotional_words = ['amazing', 'incredible', 'shocking', 'unbelievable']
+                for word in emotional_words:
+                    if word in text.lower():
+                        score += 15
+                
+                if score >= 20:
+                    quotable_moments.append({
+                        'start': segment['start'],
+                        'end': segment['end'],
+                        'text': text,
+                        'score': score
+                    })
+            
+            return sorted(quotable_moments, key=lambda x: x['score'], reverse=True)
+            
+        except Exception as e:
+            logger.error(f"❌ Error finding quotes: {str(e)}")
+            return []
+    
+    def detect_speech_energy(self, transcript: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Detect high-energy speech moments"""
+        energy_moments = []
+        
+        try:
+            for segment in transcript.get('segments', []):
+                text = segment.get('text', '').strip()
+                if not text:
+                    continue
+                
+                energy_score = 0
+                words = text.split()
+                
+                # Calculate energy
+                caps_words = sum(1 for word in words if word.isupper() and len(word) > 1)
+                energy_score += caps_words * 10
+                energy_score += text.count('!') * 15
+                
+                # High-energy words
+                energy_words = ['yes', 'no', 'stop', 'go', 'now', 'amazing']
+                for word in energy_words:
+                    if word.lower() in text.lower():
+                        energy_score += 10
+                
+                if energy_score >= 15:
+                    energy_moments.append({
+                        'start': segment['start'],
+                        'end': segment['end'],
+                        'text': text,
+                        'energy_score': energy_score
+                    })
+            
+            return sorted(energy_moments, key=lambda x: x['energy_score'], reverse=True)
+            
+        except Exception as e:
+            logger.error(f"❌ Error detecting energy: {str(e)}")
+            return []
+    
+    async def test_api_connection(self) -> Dict[str, Any]:
+        """Test OpenAI API connection"""
+        try:
+            def _test():
+                if CLIENT_TYPE == 'v1':
+                    models = list(self.client.models.list())
+                    whisper_models = [m for m in models if 'whisper' in m.id.lower()]
+                    return {
+                        "success": True,
+                        "client_type": CLIENT_TYPE,
+                        "models": len(models),
+                        "whisper_available": len(whisper_models) > 0
+                    }
+                else:
+                    raise ValueError("OpenAI v0.x not supported for production")
+            
+            return await asyncio.get_event_loop().run_in_executor(None, _test)
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "client_type": CLIENT_TYPE
+            }

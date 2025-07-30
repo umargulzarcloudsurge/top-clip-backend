@@ -1,0 +1,21 @@
+# Ignore virtual environments
+venv/
+.venv/
+
+# Ignore cached data or temp folders
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+temp/
+music/
+game_videos/
+fonts/
+
+# Ignore local development files
+*.log
+*.sqlite3
+.DS_Store
+
+# Ignore git stuff
+.git/
