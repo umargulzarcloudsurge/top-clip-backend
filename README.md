@@ -1,7 +1,7 @@
 # AI Clips Backend
 
 A high-performance backend for generating viral TikTok/YouTube Shorts clips from long-form videos using AI-powered highlight detection and automated video processing.
-
+  
 ## Features
 
 - **YouTube Video Processing**: Download and process videos from YouTube URLs
