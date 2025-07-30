@@ -1,3 +1,5 @@
+setuptools>=65
+wheel
 aiofiles==24.1.0
 certifi==2025.7.14
 fastapi==0.116.1
