@@ -1,0 +1,11 @@
+# Additional dependencies for automated YouTube cookie refresh
+# Install with: pip install -r requirements_cookies.txt
+
+# Selenium WebDriver for browser automation
+selenium>=4.15.0
+
+# Chrome WebDriver manager (optional - for automatic driver management)
+webdriver-manager>=4.0.0
+
+# Alternative: Puppeteer requires Node.js
+# Install separately with: npm install puppeteer

@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
-from .models import ProcessingJob, ClipResult, safe_serialize_clips
+from .models import ProcessingJob, ClipResult, safe_serialize_clips, ProcessingStep
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +372,11 @@ class JobManager:
                         'error': f'Serialization failed: {str(clip_error)[:100]}'
                     })
             
+            # Serialize steps information
+            steps_data = []
+            for step in job.steps:
+                steps_data.append(step.to_dict())
+            
             # Build enhanced API response
             api_response = {
                 "job_id": str(job.job_id),
@@ -386,7 +391,8 @@ class JobManager:
                 "clips_count": len(serialized_clips),
                 "serialization_errors": len(serialization_errors),
                 "user_id": getattr(job, 'user_id', None),  # Add user_id for clip fetching
-                "plan": getattr(job, 'plan', 'free')  # Add plan info
+                "plan": getattr(job, 'plan', 'free'),  # Add plan info
+                "steps": steps_data  # Add step-based progress tracking
             }
             
             # Add performance data if available
@@ -398,6 +404,10 @@ class JobManager:
                     "total_steps": perf.get('total_steps', 5),
                     "average_clip_score": perf.get('average_clip_score', 0)
                 }
+                
+                # Add strategy results if available
+                if 'strategy_results' in perf:
+                    api_response["strategy_results"] = perf['strategy_results']
             
             if serialization_errors:
                 logger.warning(f"⚠️ Job {job_id} API serialization had {len(serialization_errors)} errors")
@@ -573,6 +583,56 @@ class JobManager:
             
         except Exception as e:
             logger.error(f"❌ CRITICAL ERROR setting job error status: {str(e)}")
+    
+    async def store_strategy_results(self, job_id: str, strategy_results: List[Dict[str, Any]]):
+        """Store YouTube download strategy results for debugging and user feedback"""
+        try:
+            if job_id not in self.job_performance:
+                logger.warning(f"⚠️ No performance tracking found for job {job_id}")
+                return False
+            
+            # Store strategy results in performance data
+            self.job_performance[job_id]['strategy_results'] = {
+                'timestamp': datetime.now().isoformat(),
+                'strategies': strategy_results,
+                'summary': {
+                    'total_strategies': len(strategy_results),
+                    'successful': len([r for r in strategy_results if r['status'] == 'SUCCESS']),
+                    'failed': len([r for r in strategy_results if r['status'] == 'FAILED']),
+                    'timeout': len([r for r in strategy_results if r['status'] == 'TIMEOUT'])
+                }
+            }
+            
+            # Log strategy summary
+            summary = self.job_performance[job_id]['strategy_results']['summary']
+            await self._log_job_event(
+                job_id, 
+                f"📊 Strategy Results: ✅{summary['successful']} ❌{summary['failed']} ⏱️{summary['timeout']} (Total: {summary['total_strategies']})"
+            )
+            
+            # Log individual strategies
+            for i, result in enumerate(strategy_results, 1):
+                status_emoji = {
+                    'SUCCESS': '✅',
+                    'FAILED': '❌', 
+                    'TIMEOUT': '⏱️'
+                }.get(result['status'], '❓')
+                
+                await self._log_job_event(
+                    job_id,
+                    f"  {i}. {status_emoji} {result['strategy']} ({result['time_taken']}) - {result.get('message', 'No message')}"
+                )
+            
+            logger.info(f"📊 Stored strategy results for job {job_id}: {summary['successful']}/{summary['total_strategies']} successful")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error storing strategy results for job {job_id}: {str(e)}")
+            return False
+    
+    async def set_strategy_results(self, job_id: str, strategy_results: List[Dict[str, Any]]):
+        """Alias for store_strategy_results to maintain compatibility"""
+        return await self.store_strategy_results(job_id, strategy_results)
     
     async def cancel_job(self, job_id: str) -> bool:
         """Cancel a processing job"""
@@ -759,6 +819,139 @@ class JobManager:
         except Exception as e:
             logger.warning(f"⚠️ Error calculating directory size for {directory}: {str(e)}")
         return total_size
+    
+    async def initialize_job_steps(self, job_id: str) -> bool:
+        """Initialize processing steps for a job"""
+        try:
+            job = await self.get_job(job_id)
+            if not job:
+                logger.error(f"❌ Job {job_id} not found for step initialization")
+                return False
+            
+            # Define the standard processing steps
+            steps = [
+                ProcessingStep(
+                    name="initialization",
+                    description="Setting up job and validating inputs",
+                    status="completed",
+                    progress=100.0,
+                    started_at=datetime.now(),
+                    completed_at=datetime.now()
+                ),
+                ProcessingStep(
+                    name="video_download",
+                    description="Downloading video from YouTube",
+                    status="pending"
+                ),
+                ProcessingStep(
+                    name="ai_analysis",
+                    description="Analyzing video content and generating transcription",
+                    status="pending"
+                ),
+                ProcessingStep(
+                    name="video_processing",
+                    description="Creating clips with captions and effects",
+                    status="pending"
+                ),
+                ProcessingStep(
+                    name="thumbnail_generation",
+                    description="Generating thumbnails for clips",
+                    status="pending"
+                ),
+                ProcessingStep(
+                    name="storage_upload",
+                    description="Uploading clips to cloud storage",
+                    status="pending"
+                )
+            ]
+            
+            job.steps = steps
+            self.jobs[job_id] = job
+            
+            logger.info(f"✅ Initialized {len(steps)} processing steps for job {job_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error initializing steps for job {job_id}: {str(e)}")
+            return False
+    
+    async def update_step_status(self, job_id: str, step_name: str, status: str, progress: float = 0.0, message: str = None) -> bool:
+        """Update status of a specific processing step"""
+        try:
+            job = await self.get_job(job_id)
+            if not job:
+                logger.error(f"❌ Job {job_id} not found for step update")
+                return False
+            
+            # Find the step to update
+            step_found = False
+            for step in job.steps:
+                if step.name == step_name:
+                    old_status = step.status
+                    step.status = status
+                    step.progress = max(0.0, min(100.0, float(progress)))
+                    
+                    if message:
+                        step.message = message
+                    
+                    # Update timestamps
+                    if status == "processing" and old_status == "pending":
+                        step.started_at = datetime.now()
+                    elif status in ["completed", "error", "skipped"]:
+                        step.completed_at = datetime.now()
+                        if status == "completed":
+                            step.progress = 100.0
+                    
+                    if status == "error" and message:
+                        step.error_message = message
+                    
+                    step_found = True
+                    break
+            
+            if not step_found:
+                logger.warning(f"⚠️ Step '{step_name}' not found in job {job_id}")
+                return False
+            
+            # Update overall job progress based on step completion
+            completed_steps = len([s for s in job.steps if s.status == "completed"])
+            total_steps = len(job.steps)
+            overall_progress = (completed_steps / total_steps) * 100.0
+            
+            # Update job status
+            if status == "processing":
+                job.current_step = step_name.replace("_", " ").title()
+            
+            job.progress = overall_progress
+            job.updated_at = datetime.now().isoformat()
+            
+            # Store updated job
+            self.jobs[job_id] = job
+            
+            await self._log_job_event(job_id, f"📋 Step '{step_name}': {old_status} → {status} ({progress:.1f}%)")
+            logger.info(f"📋 Updated step '{step_name}' for job {job_id}: {status} ({progress:.1f}%)")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating step {step_name} for job {job_id}: {str(e)}")
+            return False
+    
+    async def get_job_steps(self, job_id: str) -> List[Dict[str, Any]]:
+        """Get all processing steps for a job"""
+        try:
+            job = await self.get_job(job_id)
+            if not job:
+                return []
+            
+            steps_data = []
+            for step in job.steps:
+                steps_data.append(step.to_dict())
+            
+            return steps_data
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting steps for job {job_id}: {str(e)}")
+            return []
     
     async def _log_job_event(self, job_id: str, message: str):
         """ENHANCED: Log job events with structured format"""

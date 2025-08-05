@@ -10,6 +10,9 @@ import tempfile
 import uuid
 from PIL import Image, ImageDraw, ImageFont
 
+# Import FFmpeg configuration first
+from .ffmpeg_config import FFmpegConfig
+
 from .models import (
     ProcessingOptions, ClipResult, Highlight, Layout, 
     CaptionStyle, TranscriptionSegment, WordTiming
@@ -20,12 +23,19 @@ from .viral_potential import (
     update_clip_with_viral_score
 )
 from .pycaps_service import PyCapsService  # PyCaps import
-from .transcription_service import TranscriptionService 
+from .transcription_service import TranscriptionService
 
 logger = logging.getLogger(__name__)
 
 class VideoProcessor:
     def __init__(self):
+        # Use global FFmpeg configuration
+        ffmpeg_configured = FFmpegConfig.configure()
+        if ffmpeg_configured:
+            logger.info(f"✅ Video processor using global FFmpeg: {FFmpegConfig.get_ffmpeg_path()}")
+        else:
+            logger.warning("⚠️ FFmpeg not configured - video processing may fail")
+        
         # Get paths from environment variables with defaults
         self.temp_dir = os.getenv('TEMP_DIR', 'temp')
         self.output_dir = os.getenv('OUTPUT_DIR', 'output')
@@ -161,29 +171,38 @@ class VideoProcessor:
                     temp_extracted, options, highlight, video_info, has_words, hook_title
                 )
                 
-                # Step 3: Add captions using PyCaps
-                logger.info(f"🎨 Adding captions with PyCaps to {processed_path}")
-                
-                style = CaptionStyle(options.captionStyle)   # convert string ➜ enum
-                
-                logger.info(f"🎨 Using caption style: {style}")
-                
-                caption_success = await self.caption_service.add_captions_to_video(
-                    processed_path, temp_captioned, style
-                )
-                
-                logger.info(f"🎨 PyCaps returned: {caption_success}")
-                
-                if caption_success and os.path.exists(temp_captioned):
-                    # Move to final output
-                    import shutil
-                    shutil.move(temp_captioned, output_path)
-                    logger.info(f"✅ Captions added successfully with PyCaps")
+                # Step 3: Add captions with transcription data if available
+                if highlight.transcription_segments and len(highlight.transcription_segments) > 0:
+                    logger.info(f"🎨 Adding captions with transcription data to {processed_path}")
+                    logger.info(f"📊 Found {len(highlight.transcription_segments)} transcription segments")
+                    
+                    # Log segment details for debugging
+                    for i, seg in enumerate(highlight.transcription_segments):
+                        logger.debug(f"Segment {i+1}: {seg.start:.2f}-{seg.end:.2f}s: '{seg.text[:30]}...'")
+                    
+                    style = CaptionStyle(options.captionStyle) if isinstance(options.captionStyle, str) else options.captionStyle
+                    logger.info(f"🎨 Using caption style: {style}")
+                    
+                    # Add captions to the processed video
+                    caption_success = await self._add_captions_with_ffmpeg(
+                        processed_path, temp_captioned, highlight.transcription_segments, style
+                    )
+                    
+                    if caption_success and os.path.exists(temp_captioned):
+                        # Move to final output
+                        import shutil
+                        shutil.move(temp_captioned, output_path)
+                        logger.info("✅ Captions added successfully with FFmpeg")
+                    else:
+                        logger.error("❌ Caption rendering failed, verify FFmpeg command.")
+                        logger.warning("⚠️ Using video without captions due to error")
+                        import shutil
+                        shutil.move(processed_path, output_path)
                 else:
-                    # If captions failed, use the processed video without captions
-                    logger.warning("⚠️ PyCaps failed, using video without captions")
-                    import shutil
-                    shutil.move(processed_path, output_path)
+                    # No transcription data, use video without captions
+                    logger.warning("⚠️ No transcription data available, using video without captions")
+                    # Apply minimum resolution to the processed video
+                    await self._ensure_minimum_resolution(processed_path, output_path, 1280, 720)
                 
                 return os.path.exists(output_path) and os.path.getsize(output_path) > 0
                 
@@ -247,6 +266,76 @@ class VideoProcessor:
             logger.error(f"❌ Error extracting clip: {str(e)}")
             raise
     
+    async def _ensure_minimum_resolution(self, input_path: str, output_path: str, min_width: int, min_height: int) -> None:
+        """Ensure video resolution is at least minimum specified dimensions"""
+        try:
+            if not os.path.exists(input_path):
+                logger.error(f"Input file does not exist: {input_path}")
+                raise Exception(f"Input file does not exist: {input_path}")
+            
+            # Get current video dimensions first
+            probe = ffmpeg.probe(input_path)
+            video_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
+            
+            if not video_stream:
+                logger.error("No video stream found in input file")
+                # Copy file as-is if no video stream
+                import shutil
+                shutil.copy2(input_path, output_path)
+                return
+            
+            current_width = int(video_stream['width'])
+            current_height = int(video_stream['height'])
+            
+            logger.debug(f"Current resolution: {current_width}x{current_height}, Target: {min_width}x{min_height}")
+            
+            # If resolution is already adequate, just copy the file
+            if current_width >= min_width and current_height >= min_height:
+                logger.debug("Resolution already meets minimum requirements, copying file")
+                import shutil
+                shutil.copy2(input_path, output_path)
+                return
+            
+            # Calculate scaling
+            scale_filter = f"scale='max({min_width},iw)':'max({min_height},ih)'"
+            
+            def _scale():
+                try:
+                    (
+                        ffmpeg
+                        .input(input_path)
+                        .filter('scale', f'max({min_width},iw)', f'max({min_height},ih)')
+                        .output(
+                            output_path, 
+                            vcodec='libx264', 
+                            acodec='aac',
+                            preset='fast',
+                            crf=23
+                        )
+                        .overwrite_output()
+                        .run(capture_stdout=True, capture_stderr=True, quiet=True)
+                    )
+                    logger.debug(f"Successfully scaled video to minimum resolution")
+                except ffmpeg.Error as e:
+                    error_msg = e.stderr.decode() if e.stderr else 'Unknown error'
+                    logger.error(f"FFmpeg scaling error: {error_msg}")
+                    # Fallback: copy original file
+                    import shutil
+                    shutil.copy2(input_path, output_path)
+            
+            await asyncio.get_event_loop().run_in_executor(None, _scale)
+            
+        except Exception as e:
+            logger.error(f"Error in resolution scaling: {str(e)}")
+            # Fallback: copy original file
+            try:
+                import shutil
+                shutil.copy2(input_path, output_path)
+                logger.info("Copied original file as fallback")
+            except Exception as copy_error:
+                logger.error(f"Failed to copy original file: {str(copy_error)}")
+                raise
+
     async def _apply_filters(
         self, 
         input_path: str, 
@@ -317,13 +406,13 @@ class VideoProcessor:
             return input_path
     
     def _get_target_dimensions(self, layout: Layout) -> Tuple[int, int]:
-        """Get target dimensions for layout"""
+        """Get target dimensions for layout - ensures minimum 720p"""
         if layout == Layout.VERTICAL:
-            return (1080, 1920)  # 9:16 vertical
+            return (1280, 1920)  # 9:16 vertical, minimum 720p width (1280x720)
         elif layout == Layout.SQUARE:
-            return (1080, 1080)  # 1:1 square
+            return (1280, 1280)  # 1:1 square, minimum 720p
         else:  # FIT_WITH_BLUR - assume 16:9 landscape
-            return (1920, 1080)  # 16:9 landscape
+            return (1920, 1080)  # 16:9 landscape, minimum 720p height
     
     def _apply_layout(self, video_stream, layout: Layout, width: int, height: int):
         """Apply layout transformation"""
@@ -537,6 +626,169 @@ class VideoProcessor:
             logger.error(f"Thumbnail generation timed out after 30 seconds")
         except Exception as e:
             logger.error(f"Error generating thumbnail: {str(e)}")
+    
+    async def _add_captions_with_ffmpeg(
+        self, 
+        input_video: str, 
+        output_video: str, 
+        transcription_segments: List[TranscriptionSegment], 
+        style: CaptionStyle
+    ) -> bool:
+        """Add captions to video using SRT subtitle file to avoid long command lines"""
+        try:
+            logger.info(f"📝 Adding captions with style {style} to video")
+            style_config = self.caption_service._get_caption_style_config(style)
+
+            # Create SRT subtitle file
+            srt_file = os.path.join(self.temp_dir, f"captions_{uuid.uuid4()}.srt")
+            srt_content = self._create_srt_content(transcription_segments)
+            
+            if not srt_content:
+                logger.warning("⚠️ No captions to add, copying video...")
+                import shutil
+                shutil.copy2(input_video, output_video)
+                return True
+            
+            # Write SRT file
+            with open(srt_file, 'w', encoding='utf-8') as f:
+                f.write(srt_content)
+            
+            logger.info(f"📄 Created SRT file: {srt_file}")
+            
+            try:
+                # Use FFmpeg with subtitles filter
+                input_stream = ffmpeg.input(input_video)
+                video = input_stream.video
+                audio = input_stream.audio
+                
+                # Apply subtitles using the SRT file
+                video = video.filter(
+                    'subtitles', 
+                    srt_file.replace('\\', '/'),  # FFmpeg expects forward slashes
+                    force_style=f"FontName=Arial,FontSize={style_config['fontsize']},PrimaryColour={self._hex_to_ass_color(style_config['fontcolor'])},Alignment=2,MarginV=50"
+                )
+                
+                output = ffmpeg.output(
+                    video, audio, output_video,
+                    vcodec='libx264',
+                    acodec='aac',
+                    preset='fast',
+                    crf=23,
+                    movflags='faststart'
+                )
+                
+                def _run_ffmpeg():
+                    ffmpeg.run(output, overwrite_output=True, capture_stdout=True, capture_stderr=True)
+                
+                # Add timeout protection
+                await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, _run_ffmpeg),
+                    timeout=180  # 3 minute timeout
+                )
+                
+                logger.info("✅ Captions added successfully with SRT subtitles")
+                return True
+                
+            finally:
+                # Clean up SRT file
+                if os.path.exists(srt_file):
+                    try:
+                        os.remove(srt_file)
+                        logger.debug(f"🗑️ Cleaned up SRT file: {srt_file}")
+                    except Exception as cleanup_error:
+                        logger.warning(f"⚠️ Failed to cleanup SRT file: {cleanup_error}")
+            
+        except asyncio.TimeoutError:
+            logger.error("❌ Caption rendering timed out after 3 minutes")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error adding captions with FFmpeg: {str(e)}")
+            return False
+    
+    def _create_srt_content(self, transcription_segments: List[TranscriptionSegment]) -> str:
+        """Create SRT subtitle content from transcription segments"""
+        srt_content = ""
+        subtitle_index = 1
+        
+        for segment in transcription_segments:
+            if segment.words and len(segment.words) > 0:
+                # Use word-level timing for precise captions
+                for word in segment.words:
+                    word_text = (getattr(word, 'word', getattr(word, 'text', '')) or '').strip()
+                    if not word_text:
+                        continue
+                    
+                    start_time = self._seconds_to_srt_time(word.start)
+                    end_time = self._seconds_to_srt_time(word.end)
+                    
+                    srt_content += f"{subtitle_index}\n"
+                    srt_content += f"{start_time} --> {end_time}\n"
+                    srt_content += f"{word_text}\n\n"
+                    subtitle_index += 1
+            elif segment.text.strip():
+                # Fallback to segment-level timing
+                start_time = self._seconds_to_srt_time(segment.start)
+                end_time = self._seconds_to_srt_time(segment.end)
+                
+                srt_content += f"{subtitle_index}\n"
+                srt_content += f"{start_time} --> {end_time}\n"
+                srt_content += f"{segment.text.strip()}\n\n"
+                subtitle_index += 1
+        
+        return srt_content
+    
+    def _seconds_to_srt_time(self, seconds: float) -> str:
+        """Convert seconds to SRT time format (HH:MM:SS,mmm)"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        milliseconds = int((seconds % 1) * 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
+    
+    def _hex_to_ass_color(self, color: str) -> str:
+        """Convert color name or hex color to ASS format (BGR)"""
+        # Color name to hex mapping
+        color_map = {
+            'white': 'FFFFFF',
+            'black': '000000',
+            'red': 'FF0000',
+            'green': '00FF00',
+            'blue': '0000FF',
+            'yellow': 'FFFF00',
+            'cyan': '00FFFF',
+            'magenta': 'FF00FF',
+            'purple': '800080',
+            'orange': 'FFA500',
+            'pink': 'FFC0CB',
+            'brown': 'A52A2A',
+            'gray': '808080',
+            'grey': '808080'
+        }
+        
+        # Convert color name to hex if needed
+        color_lower = color.lower().strip()
+        if color_lower in color_map:
+            hex_color = color_map[color_lower]
+        else:
+            # Assume it's already hex, remove # if present
+            hex_color = color.lstrip('#')
+            
+            # Validate hex color format
+            if len(hex_color) != 6 or not all(c in '0123456789ABCDEFabcdef' for c in hex_color):
+                # Default to white if invalid
+                hex_color = 'FFFFFF'
+        
+        # Convert hex to RGB
+        try:
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+        except ValueError:
+            # Default to white if conversion fails
+            r, g, b = 255, 255, 255
+        
+        # ASS uses BGR format
+        return f"&H00{b:02X}{g:02X}{r:02X}"
     
     async def create_clips_archive(self, job_id: str, archive_path: str):
         """Create ZIP archive of all clips"""

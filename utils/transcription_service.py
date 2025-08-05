@@ -1,10 +1,18 @@
 import os
 import logging
 import asyncio
-import time
-from typing import List, Dict, Any, Optional
 import tempfile
+import subprocess
+from typing import Dict, Any, List, Optional
+import uuid
+from datetime import datetime
+
+# Import global FFmpeg configuration first
+from .ffmpeg_config import FFmpegConfig
+
+# Import pydub
 from pydub import AudioSegment
+from pydub.utils import which
 
 try:
     import openai
@@ -21,6 +29,13 @@ logger = logging.getLogger(__name__)
 class TranscriptionService:
     def __init__(self):
         logger.info("🔧 Initializing TranscriptionService...")
+
+        # Use global FFmpeg configuration
+        ffmpeg_configured = FFmpegConfig.configure()
+        if ffmpeg_configured:
+            logger.info(f"✅ Transcription service using global FFmpeg: {FFmpegConfig.get_ffmpeg_path()}")
+        else:
+            logger.warning("⚠️ FFmpeg not configured - transcription may fail")
         
         self.client = None
         self.http_client = None
@@ -100,14 +115,28 @@ class TranscriptionService:
             return False
     
     async def transcribe_audio(self, audio_path: str, language: str = "en") -> Dict[str, Any]:
-        """Transcribe audio file using OpenAI Whisper API"""
+        """Transcribe audio file using OpenAI Whisper API with strategy tracking"""
+        strategy_results = []
+        start_time = datetime.now()
+        
         try:
             if not self.client:
                 raise ValueError("OpenAI client not initialized")
             
             # Check connection health before starting
             logger.info("🔍 Checking connection health...")
-            if not await self._ensure_connection_health():
+            health_start = datetime.now()
+            health_check = await self._ensure_connection_health()
+            health_time = (datetime.now() - health_start).total_seconds()
+            
+            strategy_results.append({
+                'strategy': 'OpenAI Connection Health Check',
+                'status': 'SUCCESS' if health_check else 'FAILED',
+                'time_taken': f'{health_time:.2f}s',
+                'message': 'Connection healthy' if health_check else 'Connection health check failed, proceeding anyway'
+            })
+            
+            if not health_check:
                 logger.warning("⚠️ Connection health check failed, proceeding anyway...")
             
             logger.info(f"🎙️ Transcribing: {audio_path}")

@@ -245,6 +245,31 @@ class ClipResult(BaseModel):
                 "serialization_error": str(e)
             }
 
+class ProcessingStep(BaseModel):
+    name: str
+    description: str
+    status: str = "pending"  # pending, processing, completed, error, skipped
+    progress: float = 0.0  # 0-100 for this specific step
+    message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    
+    class Config:
+        validate_assignment = True
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "status": self.status,
+            "progress": self.progress,
+            "message": self.message,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "error_message": self.error_message
+        }
+
 class ProcessingJob(BaseModel):
     id: str = Field(alias="job_id")
     status: str = "pending"
@@ -264,6 +289,11 @@ class ProcessingJob(BaseModel):
     estimated_time_remaining: Optional[int] = None
     user_id: Optional[str] = None
     plan: Optional[str] = "free"
+    # AI-enhanced processing fields
+    is_ai_enhanced: Optional[bool] = False
+    assemblyai_options: Optional[Dict[str, Any]] = None
+    # Step-based progress tracking
+    steps: List[ProcessingStep] = []
 
     @property
     def job_id(self) -> str:
@@ -271,7 +301,7 @@ class ProcessingJob(BaseModel):
         return self.id
 
     class Config:
-        allow_population_by_field_name = True
+        populate_by_name = True
     
     @validator('status')
     def validate_status(cls, v):
@@ -395,6 +425,7 @@ class JobStatusResponse(BaseModel):
     status: str
     progress: float
     message: str
+    steps: Optional[List[ProcessingStep]] = []
     current_step: Optional[str] = None
     clips: List[Dict[str, Any]] = []
     estimated_time_remaining: Optional[int] = None
@@ -520,13 +551,16 @@ def safe_serialize_job(job: Any) -> Dict[str, Any]:
         }
 
 def validate_youtube_url(url: str) -> bool:
-    """Validate YouTube URL format"""
+    """Validate YouTube URL format including mobile links"""
     if not url or not isinstance(url, str):
         return False
     
+    # Strip whitespace from URL
+    url = url.strip()
+    
     import re
     youtube_regex = re.compile(
-        r'^(https?://)?(www\.)?(youtube\.com/(watch\?v=|embed/|v/|shorts/)|youtu\.be/)[\w-]+.*$'
+        r'^(https?://)?(www\.|m\.)?(youtube\.com/(watch\?v=|embed/|v/|shorts/)|youtu\.be/)[\w-]+.*$'
     )
     return bool(youtube_regex.match(url))
 

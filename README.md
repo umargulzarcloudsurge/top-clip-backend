@@ -1,16 +1,17 @@
 # AI Clips Backend
 
 A high-performance backend for generating viral TikTok/YouTube Shorts clips from long-form videos using AI-powered highlight detection and automated video processing.
-  
+
 ## Features
 
-- **YouTube Video Processing**: Download and process videos from YouTube URLs
+- **YouTube Video Processing**: Download and process videos from YouTube URLs (supports both desktop and mobile links)
 - **AI Highlight Detection**: Multi-modal analysis using audio, visual, and content features
 - **Speech-to-Text**: OpenAI Whisper API integration for transcription
 - **Video Enhancement**: Automatic captions, aspect ratio conversion, and viral styling
 - **Real-time Progress**: WebSocket support for live processing updates
 - **Professional Hooks**: AI-generated viral hooks and titles
 - **Multiple Output Formats**: Support for TikTok (9:16), YouTube Shorts, and Instagram Reels
+- **Mobile URL Support**: Accepts mobile YouTube links (m.youtube.com) in addition to desktop URLs
 
 ## Architecture
 
@@ -298,7 +299,36 @@ backend/
 3. **YouTube download failures**:
    - Update yt-dlp: `pip install --upgrade yt-dlp`
    - Check for geo-restrictions
-   - Verify URL format
+   - Verify URL format (see supported formats below)
+
+### Supported YouTube URL Formats
+
+The system accepts all standard YouTube URL formats:
+
+**Desktop URLs:**
+- `https://www.youtube.com/watch?v=VIDEO_ID`
+- `https://youtube.com/watch?v=VIDEO_ID`
+- `www.youtube.com/watch?v=VIDEO_ID`
+- `youtube.com/watch?v=VIDEO_ID`
+
+**Mobile URLs:**
+- `https://m.youtube.com/watch?v=VIDEO_ID`
+- `http://m.youtube.com/watch?v=VIDEO_ID`
+- `m.youtube.com/watch?v=VIDEO_ID`
+
+**Short URLs:**
+- `https://youtu.be/VIDEO_ID`
+- `http://youtu.be/VIDEO_ID`
+- `youtu.be/VIDEO_ID`
+
+**YouTube Shorts:**
+- `https://www.youtube.com/shorts/VIDEO_ID`
+- `https://m.youtube.com/shorts/VIDEO_ID`
+- `youtube.com/shorts/VIDEO_ID`
+
+**Embed URLs:**
+- `https://www.youtube.com/embed/VIDEO_ID`
+- `https://m.youtube.com/embed/VIDEO_ID`
 
 4. **Memory issues**:
    - Reduce concurrent jobs

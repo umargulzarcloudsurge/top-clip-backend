@@ -47,6 +47,7 @@ class CheckoutRequest(BaseModel):
     user_id: str
     success_url: Optional[str] = None
     cancel_url: Optional[str] = None
+    referral: Optional[str] = None  # Rewardful referral UUID
 
 class PortalRequest(BaseModel):
     user_id: str
@@ -69,7 +70,7 @@ async def create_checkout_session(request: CheckoutRequest):
         logger.info(f"💳 Creating checkout session for user {request.user_id} with price {request.price_id}")
         
         # Get or create customer (with improved error handling)
-        customer = await get_or_create_customer(request.user_id)
+        customer = await get_or_create_customer(request.user_id, request.referral)
         logger.info(f"👤 Customer ID: {customer.id}")
         
         # Create checkout session
@@ -389,7 +390,7 @@ async def stripe_webhook(request: Request):
         logger.error(f"❌ Webhook error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-async def get_or_create_customer(user_id: str):
+async def get_or_create_customer(user_id: str, referral_id: str = None):
     """Get existing Stripe customer or create new one"""
     try:
         # Check if user already has a customer ID
@@ -398,7 +399,15 @@ async def get_or_create_customer(user_id: str):
         if response.data and response.data[0]["stripe_customer_id"]:
             # Try to retrieve existing customer, but handle if it doesn't exist
             try:
-                return stripe.Customer.retrieve(response.data[0]["stripe_customer_id"])
+                customer = stripe.Customer.retrieve(response.data[0]["stripe_customer_id"])
+                # If a referral ID is provided and the customer doesn't have one, update the customer
+                if referral_id and 'referral' not in customer.get('metadata', {}):
+                    stripe.Customer.modify(
+                        customer.id,
+                        metadata={'referral': referral_id}
+                    )
+                    logger.info(f"✅ Added referral ID to existing customer {customer.id}")
+                return customer
             except stripe.error.InvalidRequestError as e:
                 logger.warning(f"⚠️ Stored customer ID doesn't exist in Stripe: {str(e)}")
                 logger.info(f"🔄 Creating new customer for user {user_id}")
@@ -412,10 +421,14 @@ async def get_or_create_customer(user_id: str):
         user_email = response.data[0]["email"] if response.data else f"user-{user_id}@clipforge.ai"
         
         # Create new customer
-        customer = stripe.Customer.create(
-            email=user_email,
-            metadata={'user_id': user_id}
-        )
+        customer_params = {
+            'email': user_email,
+            'metadata': {'user_id': user_id}
+        }
+        if referral_id:
+            customer_params['metadata']['referral'] = referral_id
+
+        customer = stripe.Customer.create(**customer_params)
         
         # Update user profile with customer ID
         supabase.table("user_profiles").update({
@@ -428,6 +441,162 @@ async def get_or_create_customer(user_id: str):
     except Exception as e:
         logger.error(f"❌ Error getting/creating customer: {str(e)}")
         raise e
+
+@router.post("/create-test-user")
+async def create_test_user(user_id: str = None, email: str = None):
+    """Create a test user for Stripe integration testing"""
+    try:
+        import uuid
+        
+        # Generate test user ID and email if not provided
+        test_user_id = user_id or str(uuid.uuid4())
+        test_email = email or f"test-{test_user_id[:8]}@example.com"
+        
+        # Insert test user into user_profiles table
+        response = supabase.table("user_profiles").insert({
+            "id": test_user_id,
+            "email": test_email,
+            "plan": "hobby"  # Using lowercase "hobby" to match existing data
+        }).execute()
+        
+        if response.data:
+            logger.info(f"✅ Created test user: {test_user_id} with email: {test_email}")
+            return {
+                "status": "success",
+                "message": "Test user created successfully",
+                "user_id": test_user_id,
+                "email": test_email
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Failed to create test user",
+                "response": response
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Error creating test user: {str(e)}")
+        return {
+            "status": "error",
+            "message": f"Error creating test user: {str(e)}"
+        }
+
+@router.get("/get-test-user")
+async def get_test_user():
+    """Get an existing user for testing Stripe integration"""
+    try:
+        # Get a user without Stripe customer ID for testing
+        response = supabase.table("user_profiles").select("id, email, plan").is_("stripe_customer_id", "null").limit(1).execute()
+        
+        if response.data:
+            user = response.data[0]
+            return {
+                "status": "success",
+                "user_id": user["id"],
+                "email": user["email"],
+                "plan": user["plan"],
+                "message": "Found user without Stripe customer for testing"
+            }
+        else:
+            # If no users without Stripe customer, get any user
+            response = supabase.table("user_profiles").select("id, email, plan").limit(1).execute()
+            if response.data:
+                user = response.data[0]
+                return {
+                    "status": "success",
+                    "user_id": user["id"],
+                    "email": user["email"],
+                    "plan": user["plan"],
+                    "message": "Found existing user for testing"
+                }
+            
+        return {
+            "status": "error",
+            "message": "No users found in database"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting test user: {str(e)}")
+        return {
+            "status": "error",
+            "message": f"Error getting test user: {str(e)}"
+        }
+
+@router.get("/check-plan-values")
+async def check_plan_values():
+    """Check what plan values exist in the database"""
+    try:
+        # Get sample plans to see valid values
+        response = supabase.table("user_profiles").select("plan").limit(10).execute()
+        
+        plans_found = []
+        if response.data:
+            plans_found = list(set([user.get("plan") for user in response.data if user.get("plan")]))
+        
+        return {
+            "status": "success",
+            "existing_plans": plans_found,
+            "sample_count": len(response.data) if response.data else 0
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error checking plan values: {str(e)}")
+        return {
+            "status": "error",
+            "message": f"Error checking plan values: {str(e)}"
+        }
+
+@router.get("/test-db-connection")
+async def test_database_connection():
+    """Test Supabase database connection and user_profiles table access"""
+    try:
+        logger.info("Testing Supabase database connection...")
+        
+        # Test basic connection
+        try:
+            response = supabase.table("user_profiles").select("count", count="exact").execute()
+            table_count = response.count
+            logger.info(f"✅ Successfully connected to user_profiles table. Row count: {table_count}")
+        except Exception as table_error:
+            logger.error(f"❌ Error accessing user_profiles table: {str(table_error)}")
+            return {
+                "status": "error",
+                "message": f"Cannot access user_profiles table: {str(table_error)}",
+                "supabase_url": supabase_url,
+                "table_accessible": False
+            }
+        
+        # Test table structure
+        try:
+            # Try to select just one row to check table structure
+            response = supabase.table("user_profiles").select("*").limit(1).execute()
+            logger.info(f"✅ Table structure test passed. Data: {response.data}")
+        except Exception as structure_error:
+            logger.error(f"❌ Table structure error: {str(structure_error)}")
+            return {
+                "status": "error",
+                "message": f"Table structure issue: {str(structure_error)}",
+                "supabase_url": supabase_url,
+                "table_accessible": True,
+                "structure_test": False
+            }
+        
+        return {
+            "status": "success",
+            "message": "Database connection and table access working correctly",
+            "supabase_url": supabase_url,
+            "table_accessible": True,
+            "table_count": table_count,
+            "structure_test": True
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Database test failed: {str(e)}")
+        return {
+            "status": "error",
+            "message": f"Database test failed: {str(e)}",
+            "supabase_url": supabase_url
+        }
 
 @router.get("/debug-prices")
 async def debug_stripe_prices():
