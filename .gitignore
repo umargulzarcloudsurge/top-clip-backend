@@ -90,7 +90,7 @@ coverage.xml
 *.tmp
 
 # YouTube cookies
-youtube_cookies.txt
+#youtube_cookies.txt
 
 # Jupyter notebooks
 .ipynb_checkpoints/
