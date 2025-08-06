@@ -87,7 +87,19 @@ class YouTubeDownloader:
     def _setup_cookies(self, opts: dict) -> dict:
         """Setup cookies for yt-dlp options - used by all methods"""
         try:
-            # Try to find cookies file in current directory
+            # PRIORITY 1: Check environment variable for specific cookies path
+            cookies_env_path = os.getenv('YOUTUBE_COOKIES_PATH')
+            if cookies_env_path and os.path.exists(cookies_env_path):
+                if self._validate_cookies_file(cookies_env_path):
+                    opts['cookiefile'] = cookies_env_path
+                    logger.info(f"✅ Using YouTube cookies file from environment path: {cookies_env_path}")
+                    return opts
+                else:
+                    logger.warning(f"⚠️ Cookies file at {cookies_env_path} exists but is invalid")
+            elif cookies_env_path:
+                logger.warning(f"⚠️ YOUTUBE_COOKIES_PATH set to {cookies_env_path} but file doesn't exist")
+            
+            # PRIORITY 2: Try to find cookies file in current directory
             cookies_path = os.path.join(os.getcwd(), 'youtube_cookies.txt')
             if os.path.exists(cookies_path):
                 # Validate cookies file before using it
@@ -98,7 +110,7 @@ class YouTubeDownloader:
                 else:
                     logger.warning("⚠️ Cookies file exists but is invalid, proceeding without cookies")
             
-            # Try alternative cookie file locations (Linux/Ubuntu paths)
+            # PRIORITY 3: Try alternative cookie file locations (Linux/Ubuntu paths)
             alternative_paths = [
                 os.path.expanduser('~/youtube_cookies.txt'),
                 '/home/ubuntu/youtube_cookies.txt',
