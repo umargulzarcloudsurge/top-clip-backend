@@ -1025,17 +1025,17 @@ async def process_video_internal(
                     # Run the async function with overall timeout
                     async def process_with_timeout():
                         try:
-                            # 20-minute maximum timeout for entire job
+                            # 60-minute maximum timeout for entire job
                             await asyncio.wait_for(
                                 process_video_background_enhanced(
                                     job_id, youtube_url, video_path, processing_options, user_id, plan
                                 ),
-                                timeout=3600  # 20 minutes
+                                timeout=5400  # 90 minutes (1.5 hours)
                             )
                         except asyncio.TimeoutError:
                             job_mgr, _, _, _ = get_components()
-                            await job_mgr.set_job_error(job_id, "Job timed out after 20 minutes - video may be too large or have complex effects")
-                            logger.error(f"❌ Job {job_id} timed out after 20 minutes")
+                            await job_mgr.set_job_error(job_id, "Job timed out after 90 minutes - video may be too large or have complex effects")
+                            logger.error(f"❌ Job {job_id} timed out after 90 minutes")
                     
                     loop.run_until_complete(process_with_timeout())
                     

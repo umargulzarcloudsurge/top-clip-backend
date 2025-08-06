@@ -791,7 +791,7 @@ class EnhancedVideoService:
                 self.video_processor.process_highlights(
                     video_path, highlights, options, job_id
                 ),
-                timeout=1200  # 20 minute timeout
+                timeout=2400  # 40 minute timeout
             )
             
             if clips:
@@ -820,13 +820,13 @@ class EnhancedVideoService:
             print(f"⏱️ Request ID: {request_id}")
             print(f"📏 Video Path: {video_path}")
             print(f"🔢 Highlights Count: {len(highlights)}")
-            print(f"⏰ Timeout Duration: 20 minutes (1200 seconds)")
+            print(f"⏰ Timeout Duration: 40 minutes (2400 seconds)")
             print("❌ Issue: Video processing took too long")
             print("🔍 This may indicate complex video or insufficient resources")
             print("="*80)
             
-            logger.error(f"❌ [{request_id}] Clip processing timed out after 20 minutes")
-            error_logger.log_strategy_timeout('Video Processor', 'Clip Processing', 1200)
+            logger.error(f"❌ [{request_id}] Clip processing timed out after 40 minutes")
+            error_logger.log_strategy_timeout('Video Processor', 'Clip Processing', 2400)
             raise Exception("Video processing timed out - video may be too complex")
         except Exception as e:
             error_type = type(e).__name__

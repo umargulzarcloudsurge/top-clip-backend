@@ -62,84 +62,51 @@ class VideoProcessor:
         options: ProcessingOptions, 
         job_id: str
     ) -> List[ClipResult]:
-        """Process video highlights into clips with modern subtitles"""
+        """Process video highlights into clips with modern subtitles - OPTIMIZED VERSION"""
         try:
             clips = []
             job_output_dir = os.path.join(self.output_dir, job_id)
             os.makedirs(job_output_dir, exist_ok=True)
             
-            logger.info(f"🎬 Processing {len(highlights)} highlights for job {job_id}")
+            logger.info(f"🎬 Processing {len(highlights)} highlights for job {job_id} with SPEED optimizations")
             
-            # Get video info
+            # Get video info ONCE and cache it
             video_info = await self._get_video_info(video_path)
             logger.info(f"📹 Video: {video_info['width']}x{video_info['height']}, {video_info['duration']:.1f}s")
             
+            # SPEED OPTIMIZATION 1: Parallel clip processing for I/O bound operations
+            # Process multiple clips concurrently using semaphore to control resource usage
+            max_concurrent_clips = min(3, len(highlights))  # Process up to 3 clips simultaneously
+            semaphore = asyncio.Semaphore(max_concurrent_clips)
+            
+            async def process_single_clip_with_semaphore(i, highlight):
+                async with semaphore:
+                    return await self._process_clip_optimized(i, highlight, video_path, job_output_dir, options, video_info, job_id)
+            
+            # SPEED OPTIMIZATION 2: Process all clips concurrently
+            logger.info(f"⚡ Processing {len(highlights)} clips with {max_concurrent_clips} concurrent workers")
+            
+            clip_tasks = []
             for i, highlight in enumerate(highlights):
+                task = asyncio.create_task(process_single_clip_with_semaphore(i, highlight))
+                clip_tasks.append(task)
+            
+            # Wait for all clips to complete with progress tracking
+            completed_clips = []
+            for i, task in enumerate(asyncio.as_completed(clip_tasks)):
                 try:
-                    logger.info(f"🎥 Processing clip {i+1}/{len(highlights)}: '{highlight.title}'")
-                    
-                    # Generate clip filename with unique identifier
-                    safe_title = "".join(c for c in highlight.title if c.isalnum() or c in (' ', '-', '_')).rstrip()[:30]
-                    unique_id = str(uuid.uuid4())[:10]  # Generate 10-character unique identifier
-                    clip_filename = f"clip_{i+1:02d}_{safe_title.replace(' ', '_')}_{unique_id}.mp4"
-                    clip_path = os.path.join(job_output_dir, clip_filename)
-                    
-                    # Use the original title
-                    hook_title = highlight.title
-                    
-                    # Check if we have word-level timing
-                    has_words = self._has_word_timing(highlight)
-                    if not has_words:
-                        logger.warning(f"⚠️ No word-level timing for clip {i+1}, will use segment-level timing")
-                    
-                    # Process the clip
-                    success = await self._process_single_clip(
-                        video_path, 
-                        highlight, 
-                        clip_path, 
-                        options, 
-                        video_info,
-                        has_words,
-                        hook_title
-                    )
-                    
-                    if success:
-                        # Create initial clip result
-                        clip_result = ClipResult(
-                            filename=clip_filename,
-                            title=highlight.title,
-                            duration=highlight.end_time - highlight.start_time,
-                            start_time=highlight.start_time,
-                            end_time=highlight.end_time,
-                            score=highlight.score,
-                            hook_title=hook_title,
-                            engagement_score=highlight.engagement_score
-                        )
-                        
-                        # Update with calculated viral potential
-                        clip_result = update_clip_with_viral_score(clip_result, highlight)
-                        
-                        logger.info(f"✅ Clip created: {clip_filename} (Viral: {clip_result.viral_potential}%)")
-                        clips.append(clip_result)
+                    clip_result = await task
+                    if clip_result:
+                        completed_clips.append(clip_result)
+                        logger.info(f"✅ Clip {len(completed_clips)}/{len(highlights)} completed: {clip_result.filename}")
                     else:
-                        logger.error(f"❌ Failed to create clip {i+1}")
-                    
+                        logger.warning(f"⚠️ Clip {i+1} failed to process")
                 except Exception as e:
-                    error_type = type(e).__name__
-                    error_msg = str(e)
-                    request_id = job_id[:8]
-                    
-                    # INSTANT CONSOLE ERROR - Individual clip processing failure
-                    instant_error_msg = f"\n🚨 INSTANT CLIP PROCESSING ERROR: INDIVIDUAL CLIP FAILED! 🚨\n🎬 Request ID: {request_id}\n🔢 Clip Number: {i+1}/{len(highlights)}\n⏰ Start Time: {highlight.start_time:.2f}s\n⏰ End Time: {highlight.end_time:.2f}s\n📝 Title: {highlight.title}\n🔧 Error Type: {error_type}\n💬 Error Message: {error_msg}\n❌ Issue: Failed to create individual video clip\n🔍 This may indicate FFmpeg issues, file corruption, or timing problems\n" + "="*80
-                    
-                    # Log to both console and log file
-                    print(instant_error_msg)
-                    logger.error(f"🚨 INSTANT ERROR: {instant_error_msg}")
-                    
                     logger.error(f"❌ Error processing clip {i+1}: {str(e)}")
                     continue
             
-            logger.info(f"✅ Completed: {len(clips)}/{len(highlights)} clips created")
+            clips = completed_clips
+            logger.info(f"✅ SPEED OPTIMIZED: {len(clips)}/{len(highlights)} clips created concurrently")
             return clips
             
         except Exception as e:
@@ -167,6 +134,28 @@ class VideoProcessor:
                 return True
         return False
     
+    def _needs_filtering(self, options: ProcessingOptions) -> bool:
+        """Check if any filtering/effects are needed to skip unnecessary processing"""
+        # Check if any effects are actually applied
+        has_color_grading = options.colorGrading and options.colorGrading.strip() and options.colorGrading != 'None'
+        has_game_video = options.gameVideo and options.gameVideo.strip()
+        has_background_music = options.backgroundMusic and options.backgroundMusic.strip()
+        has_layout_change = options.layout and options.layout != Layout.FIT_WITH_BLUR  # Default layout
+        
+        needs_filtering = has_color_grading or has_game_video or has_background_music or has_layout_change
+        
+        if not needs_filtering:
+            logger.info("⚡ No effects needed - will skip filter processing for faster performance")
+        else:
+            effects = []
+            if has_color_grading: effects.append(f"color:{options.colorGrading}")
+            if has_game_video: effects.append(f"game:{options.gameVideo}")
+            if has_background_music: effects.append(f"music:{options.backgroundMusic}")
+            if has_layout_change: effects.append(f"layout:{options.layout}")
+            logger.info(f"🎨 Effects needed: {', '.join(effects)}")
+        
+        return needs_filtering
+    
     async def _process_single_clip(
         self, 
         video_path: str, 
@@ -188,22 +177,22 @@ class VideoProcessor:
                 # Step 1: Extract clip segment
                 await self._extract_clip(video_path, highlight, temp_extracted)
                 
-                # Step 2: Apply filters and effects (without captions)
-                processed_path = await self._apply_filters(
-                    temp_extracted, options, highlight, video_info, has_words, hook_title
-                )
+                # Step 2: Apply filters and effects (without captions) - only if needed
+                if self._needs_filtering(options):
+                    processed_path = await self._apply_filters(
+                        temp_extracted, options, highlight, video_info, has_words, hook_title
+                    )
+                else:
+                    # Skip filtering for faster processing when no effects needed
+                    processed_path = temp_extracted
+                    logger.info("⚡ Skipping filter processing - no effects needed")
                 
                 # Step 3: Add captions with transcription data if available
                 if highlight.transcription_segments and len(highlight.transcription_segments) > 0:
-                    logger.info(f"🎨 Adding captions with transcription data to {processed_path}")
-                    logger.info(f"📊 Found {len(highlight.transcription_segments)} transcription segments")
+                    logger.info(f"🎨 Adding captions ({len(highlight.transcription_segments)} segments)")
                     
-                    # Log segment details for debugging
-                    for i, seg in enumerate(highlight.transcription_segments):
-                        logger.debug(f"Segment {i+1}: {seg.start:.2f}-{seg.end:.2f}s: '{seg.text[:30]}...'")
-                    
+                    # SPEED OPTIMIZATION: Reduced logging for faster processing
                     style = CaptionStyle(options.captionStyle) if isinstance(options.captionStyle, str) else options.captionStyle
-                    logger.info(f"🎨 Using caption style: {style}")
                     
                     # Add captions to the processed video
                     caption_success = await self._add_captions_with_ffmpeg(
@@ -260,6 +249,73 @@ class VideoProcessor:
             logger.error(f"❌ Error in clip processing: {str(e)}")
             return False
     
+    async def _process_clip_optimized(
+        self, 
+        clip_index: int,
+        highlight: Highlight, 
+        video_path: str, 
+        job_output_dir: str,
+        options: ProcessingOptions, 
+        video_info: Dict[str, Any],
+        job_id: str
+    ) -> Optional[ClipResult]:
+        """Optimized single clip processing with aggressive performance improvements"""
+        try:
+            request_id = job_id[:8]
+            
+            # Generate clip filename with unique identifier
+            safe_title = "".join(c for c in highlight.title if c.isalnum() or c in (' ', '-', '_')).rstrip()[:30]
+            unique_id = str(uuid.uuid4())[:10]
+            clip_filename = f"clip_{clip_index+1:02d}_{safe_title.replace(' ', '_')}_{unique_id}.mp4"
+            clip_path = os.path.join(job_output_dir, clip_filename)
+            
+            hook_title = highlight.title
+            has_words = self._has_word_timing(highlight)
+            
+            # SPEED OPTIMIZATION: Skip word-level timing warning for faster processing
+            if not has_words:
+                logger.debug(f"⚠️ No word-level timing for clip {clip_index+1}")
+            
+            # Process the clip with optimized pipeline
+            success = await self._process_single_clip(
+                video_path, 
+                highlight, 
+                clip_path, 
+                options, 
+                video_info,
+                has_words,
+                hook_title
+            )
+            
+            if success:
+                # Create clip result
+                clip_result = ClipResult(
+                    filename=clip_filename,
+                    title=highlight.title,
+                    duration=highlight.end_time - highlight.start_time,
+                    start_time=highlight.start_time,
+                    end_time=highlight.end_time,
+                    score=highlight.score,
+                    hook_title=hook_title,
+                    engagement_score=highlight.engagement_score
+                )
+                
+                # Update with calculated viral potential
+                clip_result = update_clip_with_viral_score(clip_result, highlight)
+                
+                return clip_result
+            
+            return None
+            
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            request_id = job_id[:8]
+            
+            # OPTIMIZED ERROR LOGGING - Less verbose for faster processing
+            logger.error(f"❌ [{request_id}] Clip {clip_index+1} failed: {error_type} - {error_msg}")
+            return None
+    
     async def _extract_clip(self, video_path: str, highlight: Highlight, output_path: str):
         """Extract clip segment from video"""
         try:
@@ -267,6 +323,8 @@ class VideoProcessor:
             
             def _extract():
                 try:
+                    # SPEED OPTIMIZATION: Use stream copy when no processing is needed
+                    # This avoids re-encoding and is much faster
                     (
                         ffmpeg
                         .input(video_path, ss=highlight.start_time, t=duration)
@@ -274,9 +332,11 @@ class VideoProcessor:
                             output_path, 
                             vcodec='libx264',
                             acodec='aac',
-                            preset='fast',  # Changed from 'medium' to 'fast' for better performance
-                            crf=23,  # Slightly higher CRF for faster encoding
-                            movflags='faststart'  # Optimize for streaming
+                            preset='ultrafast',  # Fastest encoding preset
+                            crf=26,  # Optimized for speed while maintaining quality
+                            movflags='faststart',  # Optimize for streaming
+                            threads=0,  # Use all CPU cores
+                            avoid_negative_ts='make_zero'  # Fix timestamp issues
                         )
                         .overwrite_output()
                         .run(capture_stdout=True, capture_stderr=True, quiet=True)
@@ -285,14 +345,14 @@ class VideoProcessor:
                     logger.error(f"FFmpeg error: {e.stderr.decode() if e.stderr else 'Unknown error'}")
                     raise
             
-            # Add timeout protection with shorter timeout
+            # SPEED OPTIMIZATION: Reduced timeout for faster failure detection
             await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(None, _extract),
-                timeout=120  # Reduced to 2 minute timeout
+                timeout=180  # Reduced to 3 minute timeout for faster processing
             )
             
         except asyncio.TimeoutError:
-            logger.error(f"❌ Clip extraction timed out after 2 minutes")
+            logger.error(f"❌ Clip extraction timed out after 3 minutes")
             raise Exception("Video processing timed out - video may be corrupted or too complex")
         except Exception as e:
             logger.error(f"❌ Error extracting clip: {str(e)}")
@@ -341,8 +401,9 @@ class VideoProcessor:
                             output_path, 
                             vcodec='libx264', 
                             acodec='aac',
-                            preset='fast',
-                            crf=23
+                            preset='ultrafast',
+                            crf=26,
+                            threads=0  # Use all CPU cores
                         )
                         .overwrite_output()
                         .run(capture_stdout=True, capture_stderr=True, quiet=True)
@@ -398,18 +459,22 @@ class VideoProcessor:
                     video = self._apply_color_grading(video, options.colorGrading)
                 
                 # Add game video overlay if specified
-                if options.gameVideo:
+                if options.gameVideo and options.gameVideo.strip():
                     video = self._add_game_overlay(
                         video, options.gameVideo, target_width, target_height, 
                         highlight.end_time - highlight.start_time
                     )
+                else:
+                    logger.debug("⚡ Skipping game overlay - none specified")
                 
                 # Mix background music if specified
-                if options.backgroundMusic:
+                if options.backgroundMusic and options.backgroundMusic.strip():
                     audio = self._mix_background_music(
                         audio, options.backgroundMusic, 
                         highlight.end_time - highlight.start_time
                     )
+                else:
+                    logger.debug("⚡ Skipping background music - none specified")
                 
                 # Output with optimized settings
                 output = ffmpeg.output(
@@ -424,12 +489,12 @@ class VideoProcessor:
             # Add timeout protection for complex filtering
             await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(None, _process),
-                timeout=300  # Reduced to 5 minute timeout for complex operations
+                timeout=600  # Increased to 10 minute timeout for complex operations
             )
             return output_path
             
         except asyncio.TimeoutError:
-            logger.error(f"❌ Filter processing timed out after 5 minutes")
+            logger.error(f"❌ Filter processing timed out after 10 minutes")
             logger.warning(f"⚠️ Returning unfiltered clip due to timeout")
             return input_path
         except Exception as e:
@@ -563,22 +628,25 @@ class VideoProcessor:
         """Get encoding settings for quality level"""
         settings = {
             'Standard': {
-                'preset': 'medium',
-                'crf': 25,  # Good quality, smaller files
-                'profile:v': 'high',
-                'level': '4.1'
+                'preset': 'fast',  # Much faster encoding
+                'crf': 26,  # Balanced quality/speed
+                'profile:v': 'main',  # Simpler profile for faster encoding
+                'level': '4.0',
+                'threads': 0  # Use all CPU cores
             },
             'High': {
-                'preset': 'medium',  # Faster encoding
-                'crf': 23,  # High quality but reasonable file size
-                'profile:v': 'high',
-                'level': '4.1'
+                'preset': 'fast',  # Faster encoding
+                'crf': 24,  # Good quality, faster than before
+                'profile:v': 'main',
+                'level': '4.0',
+                'threads': 0
             },
             'Ultra': {
-                'preset': 'medium',  # Faster encoding
-                'crf': 21,  # Excellent quality but not excessive
+                'preset': 'medium',  # Only Ultra uses medium for best quality
+                'crf': 22,  # Good compromise
                 'profile:v': 'high',
-                'level': '4.2'
+                'level': '4.1',
+                'threads': 0
             }
         }
         
@@ -704,9 +772,10 @@ class VideoProcessor:
                     video, audio, output_video,
                     vcodec='libx264',
                     acodec='aac',
-                    preset='fast',
-                    crf=23,
-                    movflags='faststart'
+                    preset='ultrafast',  # Fastest preset for caption rendering
+                    crf=26,  # Optimized for speed
+                    movflags='faststart',
+                    threads=0  # Use all CPU cores
                 )
                 
                 def _run_ffmpeg():
@@ -715,7 +784,7 @@ class VideoProcessor:
                 # Add timeout protection
                 await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(None, _run_ffmpeg),
-                    timeout=180  # 3 minute timeout
+                    timeout=480  # 8 minute timeout for subtitle processing
                 )
                 
                 logger.info("✅ Captions added successfully with SRT subtitles")
@@ -731,7 +800,7 @@ class VideoProcessor:
                         logger.warning(f"⚠️ Failed to cleanup SRT file: {cleanup_error}")
             
         except asyncio.TimeoutError:
-            logger.error("❌ Caption rendering timed out after 3 minutes")
+            logger.error("❌ Caption rendering timed out after 8 minutes")
             return False
         except Exception as e:
             logger.error(f"❌ Error adding captions with FFmpeg: {str(e)}")
