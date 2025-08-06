@@ -1,0 +1,33 @@
+[Unit]
+Description=AI Clips Backend API
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=exec
+User=www-data
+Group=www-data
+WorkingDirectory=/path/to/your/backend
+Environment=PATH=/path/to/your/backend/venv/bin
+EnvironmentFile=/path/to/your/backend/.env.production
+ExecStart=/path/to/your/backend/venv/bin/python run_production.py
+Restart=always
+RestartSec=10
+
+# Security settings
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/path/to/your/backend/temp /path/to/your/backend/output /path/to/your/backend/thumbnails /path/to/your/backend/music /path/to/your/backend/game_videos /path/to/your/backend/logs
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=4G
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aiclips-backend
+
+[Install]
+WantedBy=multi-user.target

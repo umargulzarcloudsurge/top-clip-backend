@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  # AI Clips Backend API
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aiclips-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.production
+    volumes:
+      # Persistent storage for temp files, output, and other data
+      - ./volumes/temp:/app/temp
+      - ./volumes/output:/app/output
+      - ./volumes/thumbnails:/app/thumbnails
+      - ./volumes/music:/app/music
+      - ./volumes/game_videos:/app/game_videos
+      - ./volumes/logs:/app/logs
+    depends_on:
+      - redis
+    networks:
+      - aiclips-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Redis for job management and caching
+  redis:
+    image: redis:7-alpine
+    container_name: aiclips-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - aiclips-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    command: >
+      redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  aiclips-network:
+    driver: bridge
