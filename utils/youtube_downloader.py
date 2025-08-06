@@ -2,6 +2,7 @@ import yt_dlp
 import os
 import logging
 import asyncio
+import json
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import random
@@ -238,13 +239,19 @@ class YouTubeDownloader:
             raise Exception(f"Failed to get video information: {str(e)}")
     
     async def download_video(self, url: str, job_id: str) -> str:
-        """Download video from YouTube URL with multiple strategies"""
+        """Download video from YouTube URL with multiple strategies and comprehensive error logging"""
         strategy_results = []  # Track results for user feedback
+        request_id = job_id[:8]
+        
+        # Create enhanced error logger for download strategies
+        error_logger = self._create_enhanced_download_error_logger(request_id)
         
         try:
             # Get video info first
             info = await self.get_video_info(url)
             video_id = info.get('video_id', 'unknown')
+            
+            logger.info(f"🎬 [{request_id}] Starting YouTube download with comprehensive error logging")
             
             # Try multiple download strategies with timeout protection
             strategies = [
@@ -290,6 +297,16 @@ class YouTubeDownloader:
                         
                 except asyncio.TimeoutError:
                     elapsed_time = time.time() - start_time
+                    
+                    # INSTANT CONSOLE ERROR - Show immediately when timeout happens
+                    print(f"\n🚨 INSTANT ERROR: {strategy_name} TIMED OUT! 🚨")
+                    print(f"⏱️ Strategy: {strategy_name} ({description})")
+                    print(f"⏰ Timeout after: {elapsed_time:.1f} seconds (5 minute limit)")
+                    print(f"🔄 Attempt: {i+1}/{len(strategies)}")
+                    print(f"📺 Video ID: {video_id}")
+                    print("⚡ MOVING TO NEXT STRATEGY...")
+                    print("="*60)
+                    
                     failure_info = {
                         'strategy': strategy_name,
                         'description': description,
@@ -298,22 +315,64 @@ class YouTubeDownloader:
                         'message': f"⏱️ {strategy_name} timed out after 5 minutes"
                     }
                     strategy_results.append(failure_info)
-                    logger.warning(f"⏱️ Strategy {strategy_name} timed out after 5 minutes")
+                    logger.error(f"❌ Strategy {strategy_name} timed out after 5 minutes")
+                    
+                    # Enhanced timeout logging
+                    error_logger.log_download_timeout(strategy_name, description, 300)
                     continue
                     
                 except Exception as strategy_error:
                     elapsed_time = time.time() - start_time
-                    error_msg = str(strategy_error)[:100]  # Truncate long errors
+                    error_msg = str(strategy_error)
+                    error_type = type(strategy_error).__name__
+                    
+                    # INSTANT CONSOLE ERROR - Show immediately when strategy fails
+                    print(f"\n🚨 INSTANT ERROR: {strategy_name} FAILED! 🚨")
+                    print(f"❌ Strategy: {strategy_name} ({description})")
+                    print(f"🔧 Error Type: {error_type}")
+                    print(f"💬 Error Message: {error_msg[:150]}{'...' if len(error_msg) > 150 else ''}")
+                    print(f"⏱️ Failed after: {elapsed_time:.1f} seconds")
+                    print(f"🔄 Attempt: {i+1}/{len(strategies)}")
+                    print(f"📺 Video ID: {video_id}")
+                    print(f"🌐 URL: {url[:60]}...")
+                    
+                    # Show critical error details for common issues
+                    if 'sign in' in error_msg.lower():
+                        print("🔐 Issue: Age restriction or sign-in required")
+                    elif 'unavailable' in error_msg.lower():
+                        print("📵 Issue: Video unavailable or private")
+                    elif '403' in error_msg or 'forbidden' in error_msg.lower():
+                        print("🚫 Issue: Access forbidden - bot detection")
+                    elif 'timeout' in error_msg.lower():
+                        print("⏰ Issue: Network timeout")
+                    elif 'not found' in error_msg.lower() or '404' in error_msg:
+                        print("🔍 Issue: Video not found")
+                    
+                    if i < len(strategies) - 1:
+                        print(f"⚡ TRYING NEXT STRATEGY: {strategies[i+1][0]}...")
+                    else:
+                        print("⚠️ THIS WAS THE LAST STRATEGY!")
+                    print("="*60)
+                    
                     failure_info = {
                         'strategy': strategy_name,
                         'description': description,
                         'status': 'FAILED',
                         'time_taken': f"{elapsed_time:.1f}s",
-                        'error': error_msg,
-                        'message': f"❌ {strategy_name} failed: {error_msg}"
+                        'error': error_msg[:100],  # Truncate for storage
+                        'full_error': error_msg,   # Keep full error for logging
+                        'message': f"❌ {strategy_name} failed: {error_msg[:100]}"
                     }
                     strategy_results.append(failure_info)
-                    logger.warning(f"❌ Strategy {strategy_name} failed: {error_msg}")
+                    logger.error(f"❌ Strategy {strategy_name} failed: {error_msg}")
+                    
+                    # Enhanced strategy error logging
+                    error_logger.log_download_error(strategy_name, description, strategy_error, {
+                        'url': url,
+                        'video_id': video_id,
+                        'elapsed_time': elapsed_time,
+                        'attempt_number': i+1
+                    })
                     
                     # Add delay between strategies to avoid rate limiting
                     if i < len(strategies) - 1:  # Don't delay after last strategy
@@ -323,15 +382,24 @@ class YouTubeDownloader:
             # All strategies failed - log results for debugging
             self._log_strategy_results(job_id, strategy_results)
             
+            # Enhanced failure logging with comprehensive error summary
+            error_logger.log_all_strategies_failed(strategy_results, url, video_id)
+            
             # Create detailed failure message
             failed_strategies = [r['strategy'] for r in strategy_results if r['status'] != 'SUCCESS']
             raise Exception(f"All {len(strategies)} download strategies failed: {', '.join(failed_strategies)}")
             
         except Exception as e:
             logger.error(f"Error downloading video: {str(e)}")
-            # Log strategy results even on failure
+            import traceback
+            error_traceback = traceback.format_exc()
+            logger.error(f"Download error traceback:\n{error_traceback}")
+            
+            # Enhanced failure logging
             if strategy_results:
                 self._log_strategy_results(job_id, strategy_results)
+                error_logger.log_critical_download_failure(e, url, strategy_results)
+            
             raise Exception(f"Failed to download video: {str(e)}")
     
     async def _download_simple(self, url: str, job_id: str, video_id: str) -> Optional[str]:
@@ -854,6 +922,129 @@ class YouTubeDownloader:
             
         except Exception as e:
             logger.error(f"Error logging strategy results: {str(e)}")
+    
+    def _create_enhanced_download_error_logger(self, request_id: str):
+        """Create enhanced error logger specifically for download strategies"""
+        class DownloadErrorLogger:
+            def __init__(self, request_id):
+                self.request_id = request_id
+                self.error_count = 0
+                
+            def log_download_error(self, strategy_name: str, description: str, error: Exception, context: dict = None):
+                """Log detailed download strategy error information to console with instant fallback messaging"""
+                self.error_count += 1
+                error_type = type(error).__name__
+                error_msg = str(error)
+                
+                logger.error(f"❌ DOWNLOAD STRATEGY FAILURE #{self.error_count} [{self.request_id}] {strategy_name}")
+                logger.error(f"   📋 Description: {description}")
+                logger.error(f"   🔧 Error Type: {error_type}")
+                logger.error(f"   💬 Error Message: {error_msg}")
+                
+                if context:
+                    logger.error(f"   🔍 Context: {json.dumps(context, indent=2)}")
+                
+                # Log full traceback for critical debugging
+                import traceback
+                traceback_str = traceback.format_exc()
+                logger.error(f"   📚 Full Traceback:\n{traceback_str}")
+                
+                # INSTANT CONSOLE ERROR - YouTube Download Strategy Fallback
+                print(f"\n🚨 INSTANT YOUTUBE DOWNLOAD FALLBACK #{self.error_count}! 🚨")
+                print(f"📥 Request ID: {self.request_id}")
+                print(f"🔄 Strategy Failed: {strategy_name}")
+                print(f"📝 Strategy Description: {description}")
+                print(f"🔧 Error Type: {error_type}")
+                print(f"💬 Error Message: {error_msg}")
+                print(f"⚡ Fallback Reason: YouTube download strategy failed - trying next method")
+                
+                if context:
+                    print(f"🔍 Context Details:")
+                    for key, value in context.items():
+                        print(f"   {key}: {value}")
+                
+                # Show common error advice and what fallback will try
+                if 'sign in' in error_msg.lower():
+                    print("💡 Issue: Age-restricted or private content detected")
+                    print("🔄 Next Strategy: Will try different client to bypass restrictions")
+                elif '403' in error_msg or 'forbidden' in error_msg.lower():
+                    print("💡 Issue: Bot detection or rate limiting triggered")
+                    print("🔄 Next Strategy: Will use alternative user agent and headers")
+                elif 'unavailable' in error_msg.lower():
+                    print("💡 Issue: Video unavailable or region-blocked")
+                    print("🔄 Next Strategy: Will try different extraction method")
+                elif 'timeout' in error_msg.lower():
+                    print("💡 Issue: Network timeout or slow connection")
+                    print("🔄 Next Strategy: Will retry with different timeout settings")
+                elif 'not found' in error_msg.lower() or '404' in error_msg:
+                    print("💡 Issue: Video not found or URL invalid")
+                    print("🔄 Next Strategy: Will try alternative URL parsing")
+                else:
+                    print("💡 Issue: General download error")
+                    print("🔄 Next Strategy: Will try different download method")
+                
+                print(f"📊 Traceback: {traceback_str}")
+                print(f"⏭️ Continuing to next download strategy...")
+                print("="*80)
+                
+            def log_download_timeout(self, strategy_name: str, description: str, timeout_seconds: int):
+                """Log download strategy timeout with detailed information"""
+                self.error_count += 1
+                logger.error(f"⏱️ DOWNLOAD STRATEGY TIMEOUT #{self.error_count} [{self.request_id}] {strategy_name}")
+                logger.error(f"   📋 Description: {description}")
+                logger.error(f"   ⏰ Timeout Duration: {timeout_seconds} seconds")
+                
+                print(f"\n🚨 YOUTUBE DOWNLOAD TIMEOUT #{self.error_count} - {strategy_name} 🚨")
+                print(f"Description: {description}")
+                print(f"Timeout: {timeout_seconds} seconds")
+                print("="*80)
+                
+            def log_all_strategies_failed(self, strategy_results: list, url: str, video_id: str):
+                """Log comprehensive failure summary when all strategies fail"""
+                print(f"\n🚨 ALL YOUTUBE DOWNLOAD STRATEGIES FAILED [{self.request_id}] 🚨")
+                print("="*100)
+                print(f"URL: {url[:80]}...")
+                print(f"Video ID: {video_id}")
+                print(f"Total Strategies Attempted: {len(strategy_results)}")
+                print()
+                
+                for i, result in enumerate(strategy_results, 1):
+                    status = result.get('status', 'UNKNOWN')
+                    strategy = result.get('strategy', 'Unknown')
+                    time_taken = result.get('time_taken', '0.0s')
+                    message = result.get('message', 'No message')
+                    
+                    status_emoji = {
+                        'SUCCESS': '✅',
+                        'FAILED': '❌',
+                        'TIMEOUT': '⏱️'
+                    }.get(status, '❓')
+                    
+                    print(f"   {i}. {status_emoji} {strategy} ({time_taken})")
+                    print(f"      Description: {result.get('description', 'No description')}")
+                    print(f"      Message: {message}")
+                    
+                    if status == 'FAILED' and 'full_error' in result:
+                        print(f"      Error Details: {result['full_error'][:200]}...")
+                    print()
+                
+                print("="*100)
+                print(f"🚨 END DOWNLOAD FAILURE SUMMARY [{self.request_id}] 🚨")
+                print()
+                
+            def log_critical_download_failure(self, error: Exception, url: str, strategy_results: list):
+                """Log critical download failure with all available information"""
+                print(f"\n🚨 CRITICAL YOUTUBE DOWNLOAD FAILURE [{self.request_id}] 🚨")
+                print("="*100)
+                print(f"Final Error: {type(error).__name__} - {str(error)}")
+                print(f"URL: {url}")
+                print(f"Strategies Attempted: {len(strategy_results)}")
+                
+                import traceback
+                print(f"Critical Error Traceback:\n{traceback.format_exc()}")
+                print("="*100)
+        
+        return DownloadErrorLogger(request_id)
     
     def get_strategy_results(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get strategy results for a specific job (for debugging/analysis)"""

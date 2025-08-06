@@ -53,10 +53,11 @@ class EnhancedVideoService:
             List of successfully created clips
         """
         request_id = job_id[:8]
-        logger.info(f"🎬 [{request_id}] Starting enhanced video processing")
+        logger.info(f"🎬 [{request_id}] Starting enhanced video processing with comprehensive error logging")
         
-        # Initialize strategy tracking
+        # Initialize strategy tracking with enhanced error logging
         all_strategy_results = []
+        error_logger = self._create_enhanced_error_logger(request_id)
         
         try:
             # Step 1: Validate video file
@@ -127,17 +128,31 @@ class EnhancedVideoService:
             
             logger.info(f"✅ [{request_id}] Successfully created {len(clips)} clips")
             
-            # Store strategy results in job manager for user feedback
+            # Enhanced logging of strategy results with detailed error information
             try:
                 await job_manager.set_strategy_results(job_id, all_strategy_results)
                 logger.info(f"📊 [{request_id}] Strategy results stored successfully")
+                
+                # Log comprehensive strategy summary to console for debugging
+                self._log_strategy_summary_to_console(all_strategy_results, request_id)
+                
             except Exception as strategy_error:
-                logger.warning(f"⚠️ [{request_id}] Failed to store strategy results: {str(strategy_error)}")
+                logger.error(f"❌ [{request_id}] Failed to store strategy results: {str(strategy_error)}")
+                import traceback
+                logger.error(f"❌ [{request_id}] Strategy storage error traceback: {traceback.format_exc()}")
             
             return clips
             
         except Exception as e:
             logger.error(f"❌ [{request_id}] Enhanced video processing failed: {str(e)}")
+            import traceback
+            error_traceback = traceback.format_exc()
+            logger.error(f"❌ [{request_id}] Enhanced video processing error traceback:\n{error_traceback}")
+            
+            # Log final strategy results even on failure for debugging
+            if all_strategy_results:
+                self._log_strategy_summary_to_console(all_strategy_results, request_id, is_failure=True)
+            
             raise
     
     async def _validate_video_file(self, video_path: str, request_id: str):
@@ -183,7 +198,7 @@ class EnhancedVideoService:
         start_time = datetime.now()
         
         try:
-            # Use OpenAI Whisper (since AssemblyAI is disabled)
+            # Use OpenAI Whisper (since AssemblyAI is disabled) with enhanced error logging
             logger.info(f"🔊 [{request_id}] Using OpenAI Whisper for transcription")
             
             transcript = await asyncio.wait_for(
@@ -204,36 +219,48 @@ class EnhancedVideoService:
                 })
                 return transcript, strategy_results
             else:
-                logger.warning(f"⚠️ [{request_id}] Transcription returned no segments")
+                logger.error(f"❌ [{request_id}] Transcription returned no segments")
                 strategy_results.append({
                     'step': 'Transcription',
                     'strategy': 'OpenAI Whisper',
                     'status': 'FAILED',
                     'time_taken': f'{elapsed:.1f}s',
-                    'message': 'Transcription returned no segments'
+                    'message': 'Transcription returned no segments',
+                    'error': 'No segments generated from transcription'
                 })
                 return self._create_empty_transcript(), strategy_results
                 
         except asyncio.TimeoutError:
             elapsed = (datetime.now() - start_time).total_seconds()
-            logger.warning(f"⚠️ [{request_id}] Transcription timed out, continuing without captions")
+            logger.error(f"❌ [{request_id}] Transcription timed out after 5 minutes")
+            # Use the error_logger from the outer scope
+            if 'error_logger' in locals():
+                error_logger.log_strategy_timeout('OpenAI Whisper', 'Transcription', 300)
             strategy_results.append({
                 'step': 'Transcription',
                 'strategy': 'OpenAI Whisper',
-                'status': 'FAILED',
+                'status': 'TIMEOUT',
                 'time_taken': f'{elapsed:.1f}s',
                 'message': 'Transcription timed out after 5 minutes'
             })
             return self._create_empty_transcript(), strategy_results
         except Exception as e:
             elapsed = (datetime.now() - start_time).total_seconds()
-            logger.warning(f"⚠️ [{request_id}] Transcription failed: {str(e)}, continuing without captions")
+            logger.error(f"❌ [{request_id}] Transcription failed: {str(e)}, continuing without captions")
+            # Use the error_logger from the outer scope
+            if 'error_logger' in locals():
+                error_logger.log_strategy_error('OpenAI Whisper', 'Transcription', e, {
+                    'video_path': video_path,
+                    'disable_assembly_ai': disable_assembly_ai,
+                    'elapsed_time': elapsed
+                })
             strategy_results.append({
                 'step': 'Transcription',
                 'strategy': 'OpenAI Whisper',
                 'status': 'FAILED',
                 'time_taken': f'{elapsed:.1f}s',
-                'message': f'Transcription failed: {str(e)}'
+                'message': f'Transcription failed: {str(e)}',
+                'error': str(e)
             })
             return self._create_empty_transcript(), strategy_results
     
@@ -258,7 +285,7 @@ class EnhancedVideoService:
         
         strategy_results = []
         
-        # Strategy 1: Try AI analysis first
+        # Strategy 1: Try AI analysis first with enhanced error logging
         start_time = datetime.now()
         try:
             logger.info(f"🤖 [{request_id}] Attempting AI-based highlight generation")
@@ -287,26 +314,33 @@ class EnhancedVideoService:
                 
         except asyncio.TimeoutError:
             elapsed = (datetime.now() - start_time).total_seconds()
-            logger.warning(f"⚠️ [{request_id}] AI analysis timed out, using fallback")
+            logger.error(f"❌ [{request_id}] AI analysis timed out after 3 minutes")
+            error_logger.log_strategy_timeout('AI Analysis', 'Highlight Generation', 180)
             strategy_results.append({
                 'step': 'Highlight Generation',
                 'strategy': 'AI Analysis',
-                'status': 'FAILED',
+                'status': 'TIMEOUT',
                 'time_taken': f'{elapsed:.1f}s',
                 'message': 'AI analysis timed out after 3 minutes'
             })
         except Exception as e:
             elapsed = (datetime.now() - start_time).total_seconds()
-            logger.warning(f"⚠️ [{request_id}] AI analysis failed: {str(e)}, using fallback")
+            logger.error(f"❌ [{request_id}] AI analysis failed: {str(e)}, using fallback")
+            error_logger.log_strategy_error('AI Analysis', 'Highlight Generation', e, {
+                'video_path': video_path,
+                'options': str(options),
+                'elapsed_time': elapsed
+            })
             strategy_results.append({
                 'step': 'Highlight Generation',
                 'strategy': 'AI Analysis',
                 'status': 'FAILED',
                 'time_taken': f'{elapsed:.1f}s',
-                'message': f'AI analysis failed: {str(e)}'
+                'message': f'AI analysis failed: {str(e)}',
+                'error': str(e)
             })
         
-        # Strategy 2: Transcription-based highlights
+        # Strategy 2: Transcription-based highlights with enhanced error logging
         if transcript.get('segments'):
             start_time = datetime.now()
             try:
@@ -328,13 +362,20 @@ class EnhancedVideoService:
                     return highlights, strategy_results
             except Exception as e:
                 elapsed = (datetime.now() - start_time).total_seconds()
-                logger.warning(f"⚠️ [{request_id}] Transcription-based generation failed: {str(e)}")
+                logger.error(f"❌ [{request_id}] Transcription-based generation failed: {str(e)}")
+                error_logger.log_strategy_error('Transcription-Based', 'Highlight Generation', e, {
+                    'transcript_segments': len(transcript.get('segments', [])),
+                    'video_duration': video_duration,
+                    'options': str(options),
+                    'elapsed_time': elapsed
+                })
                 strategy_results.append({
                     'step': 'Highlight Generation',
                     'strategy': 'Transcription-Based',
                     'status': 'FAILED',
                     'time_taken': f'{elapsed:.1f}s',
-                    'message': f'Transcription-based generation failed: {str(e)}'
+                    'message': f'Transcription-based generation failed: {str(e)}',
+                    'error': str(e)
                 })
         
         # Strategy 3: Time-based fallback highlights
@@ -533,6 +574,116 @@ class EnhancedVideoService:
         
         return highlights
     
+    def _create_enhanced_error_logger(self, request_id: str):
+        """Create enhanced error logger for comprehensive strategy failure tracking"""
+        class EnhancedErrorLogger:
+            def __init__(self, request_id):
+                self.request_id = request_id
+                self.error_count = 0
+                
+            def log_strategy_error(self, strategy_name: str, step: str, error: Exception, context: dict = None):
+                """Log detailed strategy error information to console"""
+                self.error_count += 1
+                error_type = type(error).__name__
+                error_msg = str(error)
+                
+                logger.error(f"❌ STRATEGY FAILURE #{self.error_count} [{self.request_id}] {step} - {strategy_name}")
+                logger.error(f"   📋 Error Type: {error_type}")
+                logger.error(f"   💬 Error Message: {error_msg}")
+                
+                if context:
+                    logger.error(f"   🔍 Context: {json.dumps(context, indent=2)}")
+                
+                # Log full traceback for critical debugging
+                import traceback
+                traceback_str = traceback.format_exc()
+                logger.error(f"   📚 Full Traceback:\n{traceback_str}")
+                
+                # Log to console separately for immediate visibility
+                print(f"\n🚨 CLIP CREATION ERROR #{self.error_count} - {strategy_name} 🚨")
+                print(f"Step: {step}")
+                print(f"Error: {error_type} - {error_msg}")
+                if context:
+                    print(f"Context: {context}")
+                print(f"Traceback: {traceback_str}")
+                print("="*80)
+                
+            def log_strategy_timeout(self, strategy_name: str, step: str, timeout_seconds: int):
+                """Log strategy timeout with detailed information"""
+                self.error_count += 1
+                logger.error(f"⏱️ STRATEGY TIMEOUT #{self.error_count} [{self.request_id}] {step} - {strategy_name}")
+                logger.error(f"   ⏰ Timeout Duration: {timeout_seconds} seconds")
+                
+                print(f"\n🚨 CLIP CREATION TIMEOUT #{self.error_count} - {strategy_name} 🚨")
+                print(f"Step: {step}")
+                print(f"Timeout: {timeout_seconds} seconds")
+                print("="*80)
+        
+        return EnhancedErrorLogger(request_id)
+    
+    def _log_strategy_summary_to_console(self, strategy_results: List[Dict[str, Any]], request_id: str, is_failure: bool = False):
+        """Log comprehensive strategy summary to console for debugging"""
+        try:
+            status_prefix = "❌ FAILED" if is_failure else "✅ COMPLETED"
+            print(f"\n🚨 {status_prefix} CLIP CREATION STRATEGY SUMMARY [{request_id}] 🚨")
+            print("="*100)
+            
+            # Count strategy results by status
+            success_count = len([r for r in strategy_results if r.get('status') == 'SUCCESS'])
+            failed_count = len([r for r in strategy_results if r.get('status') == 'FAILED'])
+            timeout_count = len([r for r in strategy_results if r.get('status') == 'TIMEOUT'])
+            
+            print(f"📊 OVERALL STATISTICS:")
+            print(f"   ✅ Successful Strategies: {success_count}")
+            print(f"   ❌ Failed Strategies: {failed_count}")
+            print(f"   ⏱️ Timed Out Strategies: {timeout_count}")
+            print(f"   📈 Total Strategies: {len(strategy_results)}")
+            print(f"   🎯 Success Rate: {(success_count/len(strategy_results)*100) if strategy_results else 0:.1f}%")
+            print()
+            
+            # Group by step for better organization
+            steps = {}
+            for result in strategy_results:
+                step = result.get('step', 'Unknown')
+                if step not in steps:
+                    steps[step] = []
+                steps[step].append(result)
+            
+            # Log each step with its strategies
+            for step_name, step_results in steps.items():
+                print(f"🔄 STEP: {step_name.upper()}")
+                print("-" * 50)
+                
+                for i, result in enumerate(step_results, 1):
+                    status = result.get('status', 'UNKNOWN')
+                    strategy = result.get('strategy', 'Unknown Strategy')
+                    time_taken = result.get('time_taken', '0.0s')
+                    message = result.get('message', 'No message')
+                    
+                    status_emoji = {
+                        'SUCCESS': '✅',
+                        'FAILED': '❌',
+                        'TIMEOUT': '⏱️'
+                    }.get(status, '❓')
+                    
+                    print(f"   {i}. {status_emoji} {strategy}")
+                    print(f"      ⏰ Time: {time_taken}")
+                    print(f"      💬 Message: {message}")
+                    
+                    # Log additional error details for failed strategies
+                    if status == 'FAILED' and 'error' in result:
+                        print(f"      🚨 Error: {result['error']}")
+                    
+                    print()
+            
+            print("="*100)
+            print(f"🏁 END STRATEGY SUMMARY [{request_id}]")
+            print()
+            
+        except Exception as summary_error:
+            logger.error(f"❌ Failed to log strategy summary: {str(summary_error)}")
+            print(f"\n❌ Failed to log strategy summary: {str(summary_error)}")
+    
     def _create_time_based_highlights(
         self,
         options: ProcessingOptions,
@@ -630,8 +781,12 @@ class EnhancedVideoService:
         
         logger.info(f"🎥 [{request_id}] Processing {len(highlights)} clips")
         
+        # Create enhanced error logger for this method
+        error_logger = self._create_enhanced_error_logger(request_id)
+        
         try:
-            # Process clips with timeout
+            # Process clips with timeout and enhanced error logging
+            logger.info(f"🎥 [{request_id}] Starting video clip processing with {len(highlights)} highlights")
             clips = await asyncio.wait_for(
                 self.video_processor.process_highlights(
                     video_path, highlights, options, job_id
@@ -643,12 +798,69 @@ class EnhancedVideoService:
                 logger.info(f"✅ [{request_id}] Successfully processed {len(clips)} clips")
                 return clips
             else:
-                logger.warning(f"⚠️ [{request_id}] Video processor returned no clips")
+                # INSTANT CONSOLE ERROR - No clips returned
+                instant_error_msg = f"\n🚨 INSTANT VIDEO PROCESSING ERROR: NO CLIPS RETURNED! 🚨\n🎥 Request ID: {request_id}\n📏 Video Path: {video_path}\n🔢 Highlights Count: {len(highlights)}\n⚙️ Options: {options}\n❌ Issue: Video processor completed but returned zero clips\n🔍 This usually indicates FFmpeg processing errors or format issues\n" + "="*80
+                
+                # Log to both console and log file
+                print(instant_error_msg)
+                logger.error(f"🚨 INSTANT ERROR: {instant_error_msg}")
+                
+                logger.error(f"❌ [{request_id}] Video processor returned no clips")
+                error_logger.log_strategy_error('Video Processor', 'Clip Processing', 
+                    Exception("Video processor returned no clips"), {
+                        'highlights_count': len(highlights),
+                        'video_path': video_path,
+                        'options': str(options)
+                    })
                 raise Exception("Video processor returned no clips")
                 
         except asyncio.TimeoutError:
-            logger.error(f"❌ [{request_id}] Clip processing timed out")
+            # INSTANT CONSOLE ERROR - Timeout
+            print(f"\n🚨 INSTANT VIDEO PROCESSING ERROR: TIMEOUT! 🚨")
+            print(f"⏱️ Request ID: {request_id}")
+            print(f"📏 Video Path: {video_path}")
+            print(f"🔢 Highlights Count: {len(highlights)}")
+            print(f"⏰ Timeout Duration: 20 minutes (1200 seconds)")
+            print("❌ Issue: Video processing took too long")
+            print("🔍 This may indicate complex video or insufficient resources")
+            print("="*80)
+            
+            logger.error(f"❌ [{request_id}] Clip processing timed out after 20 minutes")
+            error_logger.log_strategy_timeout('Video Processor', 'Clip Processing', 1200)
             raise Exception("Video processing timed out - video may be too complex")
         except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            # INSTANT CONSOLE ERROR - General processing failure
+            print(f"\n🚨 INSTANT VIDEO PROCESSING ERROR: CLIP PROCESSING FAILED! 🚨")
+            print(f"🎥 Request ID: {request_id}")
+            print(f"📏 Video Path: {video_path}")
+            print(f"🔢 Highlights Count: {len(highlights)}")
+            print(f"🔧 Error Type: {error_type}")
+            print(f"💬 Error Message: {error_msg}")
+            print(f"⚙️ Options: {options}")
+            
+            # Show critical error details for common issues
+            if 'ffmpeg' in error_msg.lower():
+                print("⚙️ Issue: FFmpeg processing error")
+            elif 'memory' in error_msg.lower():
+                print("💾 Issue: Memory/resource limitation")
+            elif 'timeout' in error_msg.lower():
+                print("⏰ Issue: Processing timeout")
+            elif 'not found' in error_msg.lower():
+                print("🔍 Issue: File or resource not found")
+            
+            # Full traceback
+            import traceback
+            traceback_str = traceback.format_exc()
+            print(f"Traceback: {traceback_str}")
+            print("="*80)
+            
             logger.error(f"❌ [{request_id}] Clip processing failed: {str(e)}")
+            error_logger.log_strategy_error('Video Processor', 'Clip Processing', e, {
+                'highlights_count': len(highlights),
+                'video_path': video_path,
+                'options': str(options)
+            })
             raise Exception(f"Video processing failed: {str(e)}")

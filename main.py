@@ -2371,7 +2371,43 @@ async def process_video_background_enhanced(
             logger.info(f"✅ [{request_id}] Enhanced video processing complete: {len(clips)} clips created")
             
         except Exception as processing_error:
+            error_type = type(processing_error).__name__
+            error_msg = str(processing_error)
+            
+            # INSTANT CONSOLE ERROR - Show immediately when video processing fails in background
+            print(f"\n🚨 INSTANT BACKGROUND VIDEO PROCESSING ERROR! 🚨")
+            print(f"🎬 Job ID: {job_id}")
+            print(f"📺 Request ID: {request_id}")
+            print(f"📏 Video Path: {video_path}")
+            print(f"🔧 Error Type: {error_type}")
+            print(f"💬 Error Message: {error_msg}")
+            print(f"🔢 Highlights Count: {len(highlights) if 'highlights' in locals() else 'Unknown'}")
+            print(f"⚙️ Options: {options}")
+            print(f"📝 Has Transcript: {'Yes' if transcript and transcript.get('segments') else 'No'}")
+            
+            # Show critical error details for common issues
+            if 'ffmpeg' in error_msg.lower():
+                print("⚙️ Issue: FFmpeg processing error - check FFmpeg installation")
+            elif 'memory' in error_msg.lower() or 'ram' in error_msg.lower():
+                print("💾 Issue: Memory/resource limitation - video may be too large")
+            elif 'timeout' in error_msg.lower():
+                print("⏰ Issue: Processing timeout - video complexity too high")
+            elif 'not found' in error_msg.lower():
+                print("🔍 Issue: File or resource not found - check paths and dependencies")
+            elif 'permission' in error_msg.lower():
+                print("🔐 Issue: Permission denied - check file/directory permissions")
+            elif 'codec' in error_msg.lower():
+                print("🎥 Issue: Video codec error - unsupported format or corruption")
+            
+            # Show full traceback for debugging
+            import traceback
+            traceback_str = traceback.format_exc()
+            print(f"📚 Full Traceback:\n{traceback_str}")
+            print("="*80)
+            
             logger.error(f"❌ [{request_id}] Enhanced video processing failed: {str(processing_error)}")
+            import traceback
+            logger.error(f"📚 Background processing error traceback:\n{traceback.format_exc()}")
             await job_mgr.set_job_error(job_id, f"Video processing failed: {str(processing_error)}")
             return
         

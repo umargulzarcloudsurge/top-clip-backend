@@ -125,6 +125,17 @@ class VideoProcessor:
                         logger.error(f"❌ Failed to create clip {i+1}")
                     
                 except Exception as e:
+                    error_type = type(e).__name__
+                    error_msg = str(e)
+                    request_id = job_id[:8]
+                    
+                    # INSTANT CONSOLE ERROR - Individual clip processing failure
+                    instant_error_msg = f"\n🚨 INSTANT CLIP PROCESSING ERROR: INDIVIDUAL CLIP FAILED! 🚨\n🎬 Request ID: {request_id}\n🔢 Clip Number: {i+1}/{len(highlights)}\n⏰ Start Time: {highlight.start_time:.2f}s\n⏰ End Time: {highlight.end_time:.2f}s\n📝 Title: {highlight.title}\n🔧 Error Type: {error_type}\n💬 Error Message: {error_msg}\n❌ Issue: Failed to create individual video clip\n🔍 This may indicate FFmpeg issues, file corruption, or timing problems\n" + "="*80
+                    
+                    # Log to both console and log file
+                    print(instant_error_msg)
+                    logger.error(f"🚨 INSTANT ERROR: {instant_error_msg}")
+                    
                     logger.error(f"❌ Error processing clip {i+1}: {str(e)}")
                     continue
             
@@ -132,6 +143,17 @@ class VideoProcessor:
             return clips
             
         except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            request_id = job_id[:8]
+            
+            # INSTANT CONSOLE ERROR - Critical video processing failure
+            instant_error_msg = f"\n🚨 INSTANT VIDEO PROCESSOR CRITICAL ERROR! 🚨\n🎬 Request ID: {request_id}\n📁 Video Path: {video_path}\n🔢 Total Highlights: {len(highlights)}\n🔧 Error Type: {error_type}\n💬 Error Message: {error_msg}\n❌ Issue: Critical failure in video processor initialization or setup\n🔍 This indicates fundamental processing issues or resource problems\n" + "="*80
+            
+            # Log to both console and log file
+            print(instant_error_msg)
+            logger.error(f"🚨 INSTANT ERROR: {instant_error_msg}")
+            
             logger.error(f"❌ Critical error: {str(e)}")
             raise
     
@@ -225,6 +247,16 @@ class VideoProcessor:
                         logger.warning(f"⚠️ Failed to cleanup {processed_path}: {cleanup_error}")
             
         except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            # INSTANT CONSOLE ERROR - Single clip processing failure
+            instant_error_msg = f"\n🚨 INSTANT SINGLE CLIP ERROR! 🚨\n📁 Video Path: {video_path}\n📝 Output Path: {output_path}\n⏰ Start Time: {highlight.start_time:.2f}s\n⏰ End Time: {highlight.end_time:.2f}s\n🔧 Error Type: {error_type}\n💬 Error Message: {error_msg}\n❌ Issue: Individual clip processing pipeline failed\n" + "="*80
+            
+            # Log to both console and log file
+            print(instant_error_msg)
+            logger.error(f"🚨 INSTANT ERROR: {instant_error_msg}")
+            
             logger.error(f"❌ Error in clip processing: {str(e)}")
             return False
     

@@ -70,6 +70,23 @@ class ClipAnalyzer:
         except Exception as e:
             logger.error(f"❌ Error in video analysis: {str(e)}")
             logger.error(f"   Full traceback: {traceback.format_exc()}")
+            
+            # INSTANT CONSOLE ERROR - AI Analysis Fallback
+            print(f"\n🚨 INSTANT AI ANALYSIS FALLBACK! 🚨")
+            print(f"🤖 AI Analysis Failed - falling back to time-based clips")
+            print(f"📺 Video Path: {video_path}")
+            print(f"🔧 Error Type: {type(e).__name__}")
+            print(f"💬 Error Message: {str(e)}")
+            print(f"🔄 Fallback Reason: AI clip analysis failed - using basic time intervals instead")
+            print(f"💡 Fallback Strategy: Will create {options.clipCount} clips at even time intervals")
+            print(f"⚡ Clips will still be generated but without AI-powered highlights")
+            
+            # Show full traceback for debugging
+            import traceback
+            traceback_str = traceback.format_exc()
+            print(f"📚 Full Traceback:\n{traceback_str}")
+            print("="*80)
+            
             # Return fallback highlights
             return await self._create_fallback_highlights(video_path, options)
     
@@ -138,8 +155,28 @@ class ClipAnalyzer:
         except asyncio.TimeoutError:
             logger.error(f"❌ Transcription timed out after 4 minutes")
             logger.info("🚫 Clips will be generated without subtitles")
+            
+            # INSTANT CONSOLE ERROR - Clip Analyzer Transcription Timeout Fallback
+            print(f"\n🚨 INSTANT CLIP ANALYZER TRANSCRIPTION TIMEOUT FALLBACK! 🚨")
+            print(f"🎙️ Video Path: {video_path}")
+            print(f"⏰ Timeout Duration: 4 minutes (240 seconds)")
+            print(f"🔄 Fallback Reason: Transcription took too long during clip analysis")
+            print(f"💡 Fallback Strategy: Will generate clips without captions/subtitles")
+            print(f"⚡ Clips will still be created but without transcription-based highlights")
+            print("="*80)
+            
             return {'text': '', 'segments': [], 'words': []}
         except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            # INSTANT CONSOLE ERROR - Clip Analyzer Transcription Error Fallback
+            instant_error_msg = f"\n🚨 INSTANT CLIP ANALYZER TRANSCRIPTION ERROR FALLBACK! 🚨\n🎤 Video Path: {video_path}\n🔧 Error Type: {error_type}\n💬 Error Message: {error_msg}\n🎬 Context: During AI clip analysis phase\n❌ Issue: Transcription failed during clip analysis\n🔍 This indicates API issues or audio processing problems during analysis\n📁 Fallback: Will generate clips without captions/subtitles\n⚙️ Impact: AI analysis will continue but clips won't have subtitles\n" + "="*80
+            
+            # Log to both console and log file
+            print(instant_error_msg)
+            logger.error(f"🚨 INSTANT ERROR: {instant_error_msg}")
+            
             logger.error(f"❌ Transcription failed: {str(e)}")
             logger.error(f"   Full error: {traceback.format_exc()}")
             logger.info("🚫 Clips will be generated without subtitles")
@@ -187,6 +224,16 @@ class ClipAnalyzer:
             return highlights
             
         except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            # INSTANT CONSOLE ERROR - Highlights Generation With Transcription Failed
+            instant_error_msg = f"\n🚨 INSTANT HIGHLIGHTS GENERATION ERROR FALLBACK! 🚨\n🎬 Processing Options: {options}\n🔧 Error Type: {error_type}\n💬 Error Message: {error_msg}\n❌ Issue: Failed to generate highlights with transcription data\n🔍 This indicates problems combining AI analysis with transcription\n📁 Fallback: Will generate basic fallback highlights\n⚙️ Impact: Reduced quality highlights without AI analysis\n" + "="*80
+            
+            # Log to both console and log file
+            print(instant_error_msg)
+            logger.error(f"🚨 INSTANT ERROR: {instant_error_msg}")
+            
             logger.error(f"❌ Error generating highlights with transcription: {str(e)}")
             return await self._create_fallback_highlights("", options)
     
@@ -319,6 +366,16 @@ class ClipAnalyzer:
             return highlights
             
         except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            # INSTANT CONSOLE ERROR - Transcription-Based Highlights Failed
+            instant_error_msg = f"\n🚨 INSTANT TRANSCRIPTION-BASED HIGHLIGHTS ERROR! 🚨\n🔢 Number of Clips: {num_clips}\n📊 Segments Count: {len(segments)}\n🕒 Duration: {duration:.2f}s\n🔧 Error Type: {error_type}\n💬 Error Message: {error_msg}\n❌ Issue: Failed to create highlights from transcription segments\n🔍 This indicates problems processing transcription data for highlights\n📁 Fallback: Will return empty highlights list (higher-level fallback will trigger)\n" + "="*80
+            
+            # Log to both console and log file
+            print(instant_error_msg)
+            logger.error(f"🚨 INSTANT ERROR: {instant_error_msg}")
+            
             logger.error(f"❌ Error creating transcription-based highlights: {str(e)}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
@@ -530,6 +587,16 @@ class ClipAnalyzer:
             return [highlight]
             
         except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            # INSTANT CONSOLE ERROR - Final Fallback Highlights Failed
+            instant_error_msg = f"\n🚨 INSTANT FINAL FALLBACK HIGHLIGHTS ERROR! 🚨\n📁 Video Path: {video_path}\n⚙️ Options: {options}\n🔧 Error Type: {error_type}\n💬 Error Message: {error_msg}\n❌ Issue: Even the basic fallback highlight creation failed\n🔍 This indicates critical system problems - unable to create even basic clips\n📁 Final Result: No highlights will be generated (complete failure)\n" + "="*80
+            
+            # Log to both console and log file
+            print(instant_error_msg)
+            logger.error(f"🚨 INSTANT ERROR: {instant_error_msg}")
+            
             logger.error(f"❌ Error creating fallback highlights: {str(e)}")
             return []
     

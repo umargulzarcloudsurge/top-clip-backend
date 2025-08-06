@@ -209,6 +209,17 @@ class TranscriptionService:
             return result
             
         except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            elapsed = (datetime.now() - start_time).total_seconds()
+            
+            # INSTANT CONSOLE ERROR - Critical transcription failure
+            instant_error_msg = f"\n🚨 INSTANT TRANSCRIPTION CRITICAL ERROR! 🚨\n🎤 Audio Path: {audio_path}\n🔙 Language: {language}\n⏰ Elapsed Time: {elapsed:.2f}s\n🔧 Error Type: {error_type}\n💬 Error Message: {error_msg}\n❌ Issue: Critical failure in transcription service\n🔍 This indicates API issues, network problems, or audio processing failures\n📁 Fallback: Video clips will be generated without captions\n" + "="*80
+            
+            # Log to both console and log file
+            print(instant_error_msg)
+            logger.error(f"🚨 INSTANT ERROR: {instant_error_msg}")
+            
             logger.error(f"❌ Transcription error: {str(e)}")
             raise
     
@@ -337,12 +348,28 @@ class TranscriptionService:
                 
             except asyncio.TimeoutError:
                 logger.warning(f"⚠️ Transcription chunk timed out on attempt {attempt + 1}")
+                
+                # INSTANT CONSOLE ERROR - Transcription Timeout Fallback
+                print(f"\n🚨 INSTANT TRANSCRIPTION TIMEOUT FALLBACK! 🚨")
+                print(f"🎙️ Attempt: {attempt + 1}/{max_retries}")
+                print(f"⏰ Timeout Duration: 2 minutes (120 seconds)")
+                print(f"📁 Audio Chunk: {audio_path}")
+                print(f"🔄 Fallback Reason: Transcription API took too long to respond")
+                
                 if attempt < max_retries - 1:
+                    print(f"💡 Next Strategy: Will retry with exponential backoff ({retry_delay}s delay)")
+                    print(f"⚡ Retrying transcription in {retry_delay} seconds...")
+                    print("="*80)
+                    
                     logger.info(f"🔄 Retrying in {retry_delay} seconds...")
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
                     continue
                 else:
+                    print(f"❌ Final timeout after {max_retries} attempts - transcription failed")
+                    print(f"💡 Fallback Result: Clips will be generated without captions/subtitles")
+                    print("="*80)
+                    
                     logger.error(f"❌ Transcription chunk timed out after {max_retries} attempts")
                     raise Exception("Transcription timed out after multiple attempts")
             except Exception as e:
@@ -358,11 +385,42 @@ class TranscriptionService:
                 
                 if attempt < max_retries - 1 and is_retryable:
                     logger.warning(f"⚠️ Retryable error on attempt {attempt + 1}: {str(e)}")
+                    
+                    # INSTANT CONSOLE ERROR - Transcription Retryable Error Fallback
+                    print(f"\n🚨 INSTANT TRANSCRIPTION RETRY FALLBACK! 🚨")
+                    print(f"🎙️ Attempt: {attempt + 1}/{max_retries}")
+                    print(f"🔧 Error Type: {type(e).__name__}")
+                    print(f"💬 Error Message: {str(e)}")
+                    print(f"📁 Audio Chunk: {audio_path}")
+                    print(f"🔄 Fallback Reason: Network/connection issue - will retry with backoff")
+                    
+                    if 'ssl' in error_str:
+                        print("💡 Issue: SSL/TLS connection error - network security issue")
+                    elif 'connection' in error_str:
+                        print("💡 Issue: Network connection problem - temporary connectivity issue")
+                    elif 'timeout' in error_str:
+                        print("💡 Issue: Request timeout - slow network or API overload")
+                    elif 'network' in error_str:
+                        print("💡 Issue: General network error - connectivity problem")
+                    
+                    print(f"⚡ Next Strategy: Will retry in {retry_delay} seconds with exponential backoff")
+                    print("="*80)
+                    
                     logger.info(f"🔄 Retrying in {retry_delay} seconds...")
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
                     continue
                 else:
+                    # INSTANT CONSOLE ERROR - Final Transcription Failure
+                    print(f"\n🚨 INSTANT TRANSCRIPTION FINAL FAILURE! 🚨")
+                    print(f"🎙️ Final Attempt: {attempt + 1}/{max_retries}")
+                    print(f"🔧 Error Type: {type(e).__name__}")
+                    print(f"💬 Error Message: {str(e)}")
+                    print(f"📁 Audio Chunk: {audio_path}")
+                    print(f"❌ All retry attempts exhausted")
+                    print(f"💡 Fallback Result: Clips will be generated without captions/subtitles")
+                    print("="*80)
+                    
                     logger.error(f"❌ Chunk transcription error (attempt {attempt + 1}): {str(e)}")
                     raise
     
