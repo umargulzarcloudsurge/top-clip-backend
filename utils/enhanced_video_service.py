@@ -684,19 +684,14 @@ class EnhancedVideoService:
         video_duration: float,
         request_id: str
     ) -> List[Highlight]:
-        """Create time-based highlights as ultimate fallback WITH fallback captions and randomized durations"""
+        """Create time-based highlights as ultimate fallback WITH fallback captions"""
         
-        import random
         highlights = []
         clip_count = min(options.clipCount or 3, 5)
+        clip_duration = 45  # 45 second clips
         
-        # Get duration range from clip length option
-        from .clip_analyzer import ClipAnalyzer
-        analyzer = ClipAnalyzer()
-        min_duration, max_duration = analyzer._get_duration_range(options.clipLength)
-        
-        # Distribute clips evenly across video with spacing
-        interval = video_duration / (clip_count + 1)
+        # Distribute clips evenly across video
+        interval = max(clip_duration, video_duration / (clip_count + 1))
         
         # Enhanced fallback captions when no transcription is available
         fallback_captions = [
@@ -713,24 +708,14 @@ class EnhancedVideoService:
         ]
         
         for i in range(clip_count):
-            # Generate random duration for this clip
-            target_duration = random.uniform(min_duration, max_duration)
-            logger.info(f"🎲 [{request_id}] Fallback clip {i+1}: Random duration = {target_duration:.1f}s (range: {min_duration}-{max_duration}s)")
-            
             start_time = i * interval
-            end_time = start_time + target_duration
-            
-            # Ensure we don't exceed video duration
-            if end_time > video_duration:
-                end_time = video_duration
-                start_time = max(0, end_time - target_duration)
+            end_time = min(start_time + clip_duration, video_duration)
             
             if start_time >= video_duration:
                 break
             
             # Create fallback transcription segments with engaging captions
             duration = end_time - start_time
-            logger.info(f"✅ [{request_id}] Fallback clip {i+1}: Final duration = {duration:.1f}s ({start_time:.1f}s-{end_time:.1f}s)")
             segments_per_highlight = 3  # 3 caption segments per highlight  
             segment_duration = duration / segments_per_highlight
             

@@ -3,7 +3,7 @@ certifi==2025.7.14
 fastapi==0.116.1
 ffmpeg_python==0.2.0
 httpx==0.28.1
-mediapipe==0.10.7
+mediapipe==0.10.21
 numpy==1.24.3
 openai==1.97.1
 opencv_python==4.8.1.78

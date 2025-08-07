@@ -56,16 +56,20 @@ class FaceTrackingService:
     """Service for detecting and tracking faces in video clips for optimal framing"""
     
     def __init__(self):
-        """Initialize MediaPipe face detection"""
+        """Initialize MediaPipe face detection optimized for CPU-only processing"""
         try:
+            # Set CPU-only processing for MediaPipe (no GPU acceleration)
+            import os
+            os.environ['MEDIAPIPE_DISABLE_GPU'] = '1'
+            
             # Initialize MediaPipe Face Detection
             self.mp_face_detection = mp.solutions.face_detection
             self.mp_drawing = mp.solutions.drawing_utils
             
-            # Configure face detection with optimized settings for video clips
+            # Configure face detection optimized for CPU processing on Ubuntu
             self.face_detection = self.mp_face_detection.FaceDetection(
-                model_selection=1,  # 1 for full range model (better for varied distances)
-                min_detection_confidence=0.3  # Lower threshold to catch more faces in video content
+                model_selection=0,  # 0 for short range model (faster on CPU, good for most video content)
+                min_detection_confidence=0.4  # Slightly higher threshold for better CPU performance
             )
             
             # Enhanced face tracking parameters for video processing
@@ -121,6 +125,11 @@ class FaceTrackingService:
         total_confidence = 0.0
         confident_detections = 0
         
+        # Validate inputs
+        if not video_path or not os.path.exists(video_path):
+            logger.error(f"❌ Video file does not exist: {video_path}")
+            return FaceTrackingData([], (0, 0), 0.0, 0, False)
+        
         # Open video
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -144,8 +153,8 @@ class FaceTrackingService:
             # Set start position
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             
-            # Analyze frames (sample every few frames for performance)
-            frame_skip = max(1, int(fps / 5))  # Analyze ~5 frames per second
+            # Analyze frames (optimized for CPU performance)
+            frame_skip = max(1, int(fps / 3))  # Analyze ~3 frames per second for better CPU performance
             current_frame = start_frame
             
             while current_frame < end_frame:
@@ -197,25 +206,77 @@ class FaceTrackingService:
             cap.release()
     
     def _detect_faces_in_frame(self, frame: np.ndarray) -> List[FaceDetection]:
-        """Detect faces in a single frame"""
+        """Detect faces in a single frame with CPU optimization"""
         if self.face_detection is None:
             return []
         
         try:
+            # Validate frame data
+            if frame is None or frame.size == 0:
+                logger.warning("⚠️ Received empty or None frame, skipping face detection")
+                return []
+            
+            # Check frame dimensions
+            if len(frame.shape) != 3 or frame.shape[2] != 3:
+                logger.warning(f"⚠️ Invalid frame shape {frame.shape}, expected (H, W, 3)")
+                return []
+            
+            original_height, original_width = frame.shape[:2]
+            if original_width <= 0 or original_height <= 0:
+                logger.warning(f"⚠️ Invalid frame dimensions: {original_width}x{original_height}")
+                return []
+            
+            # CPU optimization: Downsample large frames for faster processing
+            scale_factor = 1.0
+            if original_width > 1280:  # Downsample if frame is larger than 1280px
+                scale_factor = 1280.0 / original_width
+                new_width = int(original_width * scale_factor)
+                new_height = int(original_height * scale_factor)
+                frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+            
+            frame_height, frame_width = frame.shape[:2]
+            
+            # Ensure frame is contiguous in memory
+            if not frame.flags['C_CONTIGUOUS']:
+                frame = np.ascontiguousarray(frame)
+            
             # Convert BGR to RGB for MediaPipe
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Process frame
+            # Validate RGB frame
+            if rgb_frame is None or rgb_frame.size == 0:
+                logger.warning("⚠️ Failed to convert frame to RGB, skipping face detection")
+                return []
+            
+            # Ensure RGB frame is writable and contiguous
+            rgb_frame.flags.writeable = False  # MediaPipe expects non-writable images
+            
+            # Process frame with MediaPipe
             results = self.face_detection.process(rgb_frame)
             
+            # Reset writeable flag after processing
+            rgb_frame.flags.writeable = True
+            
             faces = []
-            if results.detections:
-                frame_height, frame_width = frame.shape[:2]
-                
+            if results and results.detections:
                 for detection in results.detections:
-                    face = FaceDetection.from_mediapipe_detection(detection, frame_width, frame_height)
-                    if face.confidence >= self.min_confidence:
-                        faces.append(face)
+                    try:
+                        face = FaceDetection.from_mediapipe_detection(detection, frame_width, frame_height)
+                        
+                        # Scale coordinates back to original frame size if we downsampled
+                        if scale_factor < 1.0:
+                            face.x = int(face.x / scale_factor)
+                            face.y = int(face.y / scale_factor)
+                            face.width = int(face.width / scale_factor)
+                            face.height = int(face.height / scale_factor)
+                            face.center_x = int(face.center_x / scale_factor)
+                            face.center_y = int(face.center_y / scale_factor)
+                        
+                        if face.confidence >= self.min_confidence:
+                            faces.append(face)
+                    except Exception as det_e:
+                        logger.warning(f"⚠️ Error processing individual face detection: {str(det_e)}")
+                        continue
                 
                 # Sort by confidence and keep top faces
                 faces.sort(key=lambda f: f.confidence, reverse=True)
