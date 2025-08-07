@@ -67,12 +67,9 @@ class EnhancedVideoService:
             video_duration = await self._get_video_duration(video_path)
             logger.info(f"📹 [{request_id}] Video duration: {video_duration:.1f}s")
             
-            # Update progress
-            await job_manager.update_job_status(
-                job_id, "processing", 10.0,
-                "Analyzing video content and generating transcription",
-                "Content Analysis"
-            )
+            # Progress tracking is handled by the main process to avoid conflicts
+            # Do not update progress here as it interferes with main.py progress tracking
+            logger.debug(f"📊 [{request_id}] Step 1: Video validation and duration check complete")
             
             # Step 3: Use provided transcript or generate new one (with fallback)
             if transcript and transcript.get('segments'):
@@ -110,12 +107,9 @@ class EnhancedVideoService:
                 logger.error(f"❌ [{request_id}] No highlights generated")
                 raise Exception("Failed to generate any highlights from video content")
             
-            # Update progress
-            await job_manager.update_job_status(
-                job_id, "processing", 40.0,
-                f"Processing {len(highlights)} video clips with captions",
-                "Video Processing"
-            )
+            # Progress tracking is handled by the main process to avoid conflicts
+            # Do not update progress here as it interferes with main.py progress tracking
+            logger.info(f"📊 [{request_id}] Step 2: Ready to process {len(highlights)} video clips with captions")
             
             # Step 5: Process clips with enhanced error handling
             clips = await self._process_clips_with_fallbacks(
@@ -690,19 +684,14 @@ class EnhancedVideoService:
         video_duration: float,
         request_id: str
     ) -> List[Highlight]:
-        """Create time-based highlights as ultimate fallback WITH fallback captions and randomized durations"""
+        """Create time-based highlights as ultimate fallback WITH fallback captions"""
         
-        import random
         highlights = []
         clip_count = min(options.clipCount or 3, 5)
+        clip_duration = 45  # 45 second clips
         
-        # Get duration range from clip length option
-        from .clip_analyzer import ClipAnalyzer
-        analyzer = ClipAnalyzer()
-        min_duration, max_duration = analyzer._get_duration_range(options.clipLength)
-        
-        # Distribute clips evenly across video with spacing
-        interval = video_duration / (clip_count + 1)
+        # Distribute clips evenly across video
+        interval = max(clip_duration, video_duration / (clip_count + 1))
         
         # Enhanced fallback captions when no transcription is available
         fallback_captions = [
@@ -719,24 +708,14 @@ class EnhancedVideoService:
         ]
         
         for i in range(clip_count):
-            # Generate random duration for this clip
-            target_duration = random.uniform(min_duration, max_duration)
-            logger.info(f"🎲 [{request_id}] Fallback clip {i+1}: Random duration = {target_duration:.1f}s (range: {min_duration}-{max_duration}s)")
-            
             start_time = i * interval
-            end_time = start_time + target_duration
-            
-            # Ensure we don't exceed video duration
-            if end_time > video_duration:
-                end_time = video_duration
-                start_time = max(0, end_time - target_duration)
+            end_time = min(start_time + clip_duration, video_duration)
             
             if start_time >= video_duration:
                 break
             
             # Create fallback transcription segments with engaging captions
             duration = end_time - start_time
-            logger.info(f"✅ [{request_id}] Fallback clip {i+1}: Final duration = {duration:.1f}s ({start_time:.1f}s-{end_time:.1f}s)")
             segments_per_highlight = 3  # 3 caption segments per highlight  
             segment_duration = duration / segments_per_highlight
             
