@@ -17,56 +17,59 @@ class PyCapsService:
         logger.info("🎨 Caption Service initialized (using FFmpeg)")
     
     def _get_caption_style_config(self, caption_style: CaptionStyle) -> dict:
-        """Get FFmpeg caption style configuration"""
+        """Get FFmpeg caption style configuration with enhanced visibility"""
         styles = {
             CaptionStyle.HYPE: {
-                'fontsize': 48,
+                'fontsize': 56,  # Increased from 48
                 'fontcolor': 'FFFFFF',  # White
                 'box': 1,
-                'boxcolor': '000000@0.8',  # Black with alpha
+                'boxcolor': '000000@0.9',  # Darker background for better contrast
                 'boxborderw': 8,
-                'fontfile': os.path.join(os.getenv('FONTS_DIR', 'fonts'), 'arial.ttf'),  # Specify default font file
+                'fontfile': None,  # Let FFmpeg use default system font
                 'bold': 1,
                 'shadow': 1,
-                'shadowcolor': '000000',  # Black
-                'shadowx': 2,
-                'shadowy': 2
+                'shadowcolor': '000000',  # Black shadow
+                'shadowx': 3,  # Stronger shadow
+                'shadowy': 3
             },
             CaptionStyle.VIBRANT: {
-                'fontsize': 44,
+                'fontsize': 52,  # Increased from 44
                 'fontcolor': 'FFFF00',  # Yellow
                 'box': 1,
-                'boxcolor': '800080@0.7',  # Purple with alpha
+                'boxcolor': '800080@0.8',  # Purple with alpha
                 'boxborderw': 6,
                 'fontfile': None,
                 'bold': 1,
                 'shadow': 1,
-                'shadowcolor': '000000',  # Black
-                'shadowx': 3,
-                'shadowy': 3
+                'shadowcolor': '000000',  # Black shadow for contrast
+                'shadowx': 4,  # Stronger shadow
+                'shadowy': 4
             },
             CaptionStyle.NEO_MINIMAL: {
-                'fontsize': 36,
+                'fontsize': 44,  # Increased from 36
                 'fontcolor': 'FFFFFF',  # White
                 'box': 1,
-                'boxcolor': '000000@0.5',  # Black with alpha
-                'boxborderw': 2,
+                'boxcolor': '000000@0.7',  # Darker for better visibility
+                'boxborderw': 3,  # Slightly thicker border
                 'fontfile': None,
-                'bold': 0,
-                'shadow': 0
+                'bold': 1,  # Made bold for better visibility
+                'shadow': 1,  # Added shadow
+                'shadowcolor': '000000',
+                'shadowx': 2,
+                'shadowy': 2
             },
             CaptionStyle.LINE_FOCUS: {
-                'fontsize': 40,
+                'fontsize': 48,  # Increased from 40
                 'fontcolor': 'FFFFFF',  # White
                 'box': 1,
-                'boxcolor': 'FF0000@0.8',  # Red with alpha
-                'boxborderw': 4,
+                'boxcolor': 'FF0000@0.9',  # Stronger red background
+                'boxborderw': 5,  # Thicker border
                 'fontfile': None,
                 'bold': 1,
                 'shadow': 1,
-                'shadowcolor': '000000',  # Black
-                'shadowx': 2,
-                'shadowy': 2
+                'shadowcolor': '000000',  # Black shadow
+                'shadowx': 3,  # Stronger shadow
+                'shadowy': 3
             }
         }
         return styles.get(caption_style, styles[CaptionStyle.HYPE])

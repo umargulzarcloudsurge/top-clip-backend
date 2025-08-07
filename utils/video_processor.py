@@ -761,11 +761,40 @@ class VideoProcessor:
                 video = input_stream.video
                 audio = input_stream.audio
                 
-                # Apply subtitles using the SRT file
+                # Apply subtitles using the SRT file with enhanced styling
+                # Convert Windows path to proper format for FFmpeg
+                srt_file_path = srt_file.replace('\\', '/')
+                
+                # Enhanced subtitle styling with better visibility
+                subtitle_style = (
+                    f"FontName=Arial Bold,"
+                    f"FontSize={max(style_config['fontsize'], 36)},"
+                    f"PrimaryColour={self._hex_to_ass_color(style_config['fontcolor'])},"
+                    f"OutlineColour=&H00000000,"
+                    f"BackColour=&H80000000,"
+                    f"Bold=1,"
+                    f"Italic=0,"
+                    f"Underline=0,"
+                    f"StrikeOut=0,"
+                    f"ScaleX=100,"
+                    f"ScaleY=100,"
+                    f"Spacing=0,"
+                    f"Angle=0,"
+                    f"BorderStyle=1,"
+                    f"Outline=3,"
+                    f"Shadow=2,"
+                    f"Alignment=2,"
+                    f"MarginL=20,"
+                    f"MarginR=20,"
+                    f"MarginV=80"
+                )
+                
+                logger.info(f"🎨 Applying subtitles with enhanced styling: {subtitle_style[:100]}...")
+                
                 video = video.filter(
                     'subtitles', 
-                    srt_file.replace('\\', '/'),  # FFmpeg expects forward slashes
-                    force_style=f"FontName=Arial,FontSize={style_config['fontsize']},PrimaryColour={self._hex_to_ass_color(style_config['fontcolor'])},Alignment=2,MarginV=50"
+                    srt_file_path,
+                    force_style=subtitle_style
                 )
                 
                 output = ffmpeg.output(
@@ -779,7 +808,32 @@ class VideoProcessor:
                 )
                 
                 def _run_ffmpeg():
-                    ffmpeg.run(output, overwrite_output=True, capture_stdout=True, capture_stderr=True)
+                    try:
+                        # Log FFmpeg command for debugging
+                        cmd_args = ffmpeg.compile(output, overwrite_output=True)
+                        logger.debug(f"🔧 FFmpeg caption command: {' '.join(cmd_args)}")
+                        
+                        # Run with detailed error capture
+                        result = ffmpeg.run(output, overwrite_output=True, capture_stdout=True, capture_stderr=True)
+                        
+                        # Verify output file was created successfully
+                        if os.path.exists(output_video) and os.path.getsize(output_video) > 1024:  # At least 1KB
+                            logger.info(f"✅ Caption video created successfully: {os.path.getsize(output_video)} bytes")
+                        else:
+                            raise Exception(f"Caption output file is missing or too small: {output_video}")
+                            
+                    except ffmpeg.Error as e:
+                        stderr_output = e.stderr.decode('utf-8', errors='ignore') if e.stderr else 'No stderr'
+                        stdout_output = e.stdout.decode('utf-8', errors='ignore') if e.stdout else 'No stdout'
+                        
+                        logger.error(f"❌ FFmpeg caption error - STDERR: {stderr_output}")
+                        logger.error(f"❌ FFmpeg caption error - STDOUT: {stdout_output}")
+                        
+                        # Log the exact command that failed
+                        if hasattr(e, 'cmd'):
+                            logger.error(f"❌ Failed command: {' '.join(e.cmd)}")
+                        
+                        raise Exception(f"FFmpeg caption processing failed: {stderr_output}")
                 
                 # Add timeout protection
                 await asyncio.wait_for(
