@@ -246,8 +246,9 @@ class ClipAnalyzer:
         min_duration: float,
         max_duration: float
     ) -> List[Highlight]:
-        """Create highlights based on transcription segments"""
+        """Create highlights based on transcription segments with randomized durations"""
         try:
+            import random
             highlights = []
             
             # Group segments into clips
@@ -265,20 +266,32 @@ class ClipAnalyzer:
                 if not clip_segments:
                     continue
                 
-                # Calculate clip boundaries
-                start_time = clip_segments[0]['start']
-                end_time = clip_segments[-1]['end']
+                # Generate random target duration for this clip within the specified range
+                target_duration = random.uniform(min_duration, max_duration)
+                logger.info(f"🎲 Clip {i+1}: Random target duration = {target_duration:.1f}s (range: {min_duration}-{max_duration}s)")
                 
-                # Ensure clip meets duration requirements
-                clip_duration = end_time - start_time
-                if clip_duration < min_duration:
-                    # Extend the clip
-                    extension = (min_duration - clip_duration) / 2
+                # Calculate initial clip boundaries
+                start_time = clip_segments[0]['start']
+                initial_end_time = clip_segments[-1]['end']
+                
+                # Adjust to match the random target duration
+                end_time = start_time + target_duration
+                
+                # Ensure we don't exceed video duration
+                if end_time > duration:
+                    end_time = duration
+                    start_time = max(0, end_time - target_duration)
+                
+                # Ensure minimum duration is still met after adjustments
+                actual_duration = end_time - start_time
+                if actual_duration < min_duration:
+                    # Extend the clip to meet minimum duration
+                    extension_needed = min_duration - actual_duration
+                    extension = extension_needed / 2
                     start_time = max(0, start_time - extension)
                     end_time = min(duration, end_time + extension)
-                elif clip_duration > max_duration:
-                    # Trim the clip
-                    end_time = start_time + max_duration
+                
+                logger.info(f"✅ Clip {i+1}: Final duration = {end_time - start_time:.1f}s ({start_time:.1f}s-{end_time:.1f}s)")
                 
                 # Create transcription segments for this highlight
                 transcription_segments = []
@@ -479,20 +492,32 @@ class ClipAnalyzer:
         min_duration: float,
         max_duration: float
     ) -> List[Highlight]:
-        """Create time-based highlights without transcription"""
+        """Create time-based highlights without transcription with randomized durations"""
         try:
+            import random
             highlights = []
             
-            # Create clips at regular intervals
-            interval = duration / num_clips
+            # Create clips at regular intervals with randomized durations
+            interval = duration / (num_clips + 1)  # Add buffer to avoid overlap
             
-            logger.info(f"⏰ Creating {num_clips} time-based highlights (interval: {interval:.1f}s)")
+            logger.info(f"⏰ Creating {num_clips} time-based highlights with random durations (range: {min_duration}-{max_duration}s)")
             
             for i in range(num_clips):
-                start_time = i * interval
-                end_time = min(start_time + min_duration, duration, start_time + max_duration)
+                # Generate random duration for this clip
+                target_duration = random.uniform(min_duration, max_duration)
                 
-                if end_time - start_time >= min_duration:
+                # Calculate start time with some spacing
+                start_time = i * interval
+                end_time = start_time + target_duration
+                
+                # Ensure we don't exceed video duration
+                if end_time > duration:
+                    end_time = duration
+                    start_time = max(0, end_time - target_duration)
+                
+                # Ensure minimum duration is met
+                actual_duration = end_time - start_time
+                if actual_duration >= min_duration:
                     highlight = Highlight(
                         start_time=start_time,
                         end_time=end_time,
@@ -505,7 +530,7 @@ class ClipAnalyzer:
                     )
                     highlights.append(highlight)
                     
-                    logger.info(f"⏱️ Created time-based highlight {i+1}: ({start_time:.1f}s-{end_time:.1f}s) - NO SUBTITLES")
+                    logger.info(f"⏱️ Created time-based highlight {i+1}: {actual_duration:.1f}s duration ({start_time:.1f}s-{end_time:.1f}s) - NO SUBTITLES")
             
             return highlights
             
@@ -568,13 +593,17 @@ class ClipAnalyzer:
             return {'scene_changes': [], 'motion_intensity': [], 'face_detections': [], 'frame_times': [], 'brightness_changes': []}
     
     async def _create_fallback_highlights(self, video_path: str, options: ProcessingOptions) -> List[Highlight]:
-        """Create fallback highlights when analysis fails"""
+        """Create fallback highlights when analysis fails with randomized duration"""
         try:
+            import random
             min_duration, max_duration = self._get_duration_range(options.clipLength)
+            
+            # Generate random duration for fallback clip
+            target_duration = random.uniform(min_duration, max_duration)
             
             highlight = Highlight(
                 start_time=10.0,
-                end_time=10.0 + min_duration,
+                end_time=10.0 + target_duration,
                 score=0.6,
                 title="Video Highlight",
                 transcription_segments=[],  # No subtitles in fallback
@@ -583,7 +612,7 @@ class ClipAnalyzer:
                 content_features={}
             )
             
-            logger.warning("⚠️ Using fallback highlight - NO SUBTITLES")
+            logger.warning(f"⚠️ Using fallback highlight with random duration: {target_duration:.1f}s - NO SUBTITLES")
             return [highlight]
             
         except Exception as e:

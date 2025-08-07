@@ -2041,9 +2041,29 @@ async def process_video_background_enhanced(
             from utils.models import Highlight
             highlights = []
             
+            # Import random for randomized durations
+            import random
+            
+            # Get duration range from options
+            def get_duration_range(clip_length):
+                if clip_length == "<30s":
+                    return (15, 30)
+                elif clip_length == "30-60s":
+                    return (30, 60)
+                elif clip_length == "60-90s":
+                    return (60, 90)
+                else:
+                    return (20, 45)
+            
+            min_dur, max_dur = get_duration_range(options.clipLength)
+            
             for i in range(min(options.clipCount, 4)):  # Create up to 4 fallback clips
+                # Generate random duration for this clip
+                target_duration = random.uniform(min_dur, max_dur)
+                logger.info(f"🎲 [{request_id}] Fallback clip {i+1}: Random duration = {target_duration:.1f}s (range: {min_dur}-{max_dur}s)")
+                
                 start_time = i * 60  # 60 seconds apart
-                end_time = min(start_time + 45, video_duration)  # 45 second clips, bounded by video duration
+                end_time = min(start_time + target_duration, video_duration)  # Use random duration, bounded by video duration
                 
                 # Skip if start time is beyond video duration
                 if start_time >= video_duration:
@@ -2079,15 +2099,35 @@ async def process_video_background_enhanced(
                 from utils.models import Highlight
                 highlights = []
                 
+                # Import random for randomized durations
+                import random
+                
+                # Get duration range from options
+                def get_duration_range_simple(clip_length):
+                    if clip_length == "<30s":
+                        return (15, 30)
+                    elif clip_length == "30-60s":
+                        return (30, 60)
+                    elif clip_length == "60-90s":
+                        return (60, 90)
+                    else:
+                        return (20, 45)
+                
+                min_dur, max_dur = get_duration_range_simple(options.clipLength)
+                
                 for i in range(min(options.clipCount, 4)):  # Create up to 4 fallback clips
+                    # Generate random duration for this clip
+                    target_duration = random.uniform(min_dur, max_dur)
+                    logger.info(f"🎲 [{request_id}] Error fallback clip {i+1}: Random duration = {target_duration:.1f}s (range: {min_dur}-{max_dur}s)")
+                    
                     start_time = i * 60  # 60 seconds apart
-                    end_time = min(start_time + 45, video_duration)  # 45 second clips, bounded by video duration
+                    end_time = min(start_time + target_duration, video_duration)  # Use random duration, bounded by video duration
                     
                     # Skip if start time is beyond video duration
                     if start_time >= video_duration:
                         break
                     
-                    logger.info(f"📝 [{request_id}] Fallback clip {i+1} ({start_time:.1f}s-{end_time:.1f}s)")
+                    logger.info(f"📝 [{request_id}] Error fallback clip {i+1} ({start_time:.1f}s-{end_time:.1f}s)")
                     
                     # Extract transcription segments for this time range
                     clip_segments = []
@@ -2095,57 +2135,53 @@ async def process_video_background_enhanced(
                         for seg in transcript.get('segments', []):
                             seg_start = seg.get('start', 0)
                             seg_end = seg.get('end', 0)
-                        
-                        # Check if segment overlaps with clip timeframe
-                        if seg_start < end_time and seg_end > start_time:
-                            # Adjust segment times to be relative to clip start and within bounds
-                            adjusted_start = max(0, seg_start - start_time)
-                            adjusted_end = min(end_time - start_time, seg_end - start_time)
                             
-                            # Convert dictionary words to WordTiming objects with display_text
-                            word_timings = []
-                            if seg.get('words'):
-                                for word_dict in seg.get('words', []):
-                                    word_start = word_dict.get('start', 0)
-                                    word_end = word_dict.get('end', 0)
-                                    
-                                    # Include words that overlap with the clip timeframe (more inclusive)
-                                    if word_start < end_time and word_end > start_time:
-                                        # Adjust word timing to be relative to clip start
-                                        adjusted_word_start = max(0, word_start - start_time)
-                                        adjusted_word_end = min(end_time - start_time, word_end - start_time)
+                            # Check if segment overlaps with clip timeframe
+                            if seg_start < end_time and seg_end > start_time:
+                                # Adjust segment times to be relative to clip start and within bounds
+                                adjusted_start = max(0, seg_start - start_time)
+                                adjusted_end = min(end_time - start_time, seg_end - start_time)
+                                
+                                # Convert dictionary words to WordTiming objects with display_text
+                                word_timings = []
+                                if seg.get('words'):
+                                    for word_dict in seg.get('words', []):
+                                        word_start = word_dict.get('start', 0)
+                                        word_end = word_dict.get('end', 0)
                                         
-                                        word_timing = WordTiming(
-                                            start=adjusted_word_start,
-                                            end=adjusted_word_end,
-                                            text=word_dict.get('word', word_dict.get('text', '')),
-                                            word=word_dict.get('word', word_dict.get('text', ''))
-                                        )
-                                        word_timings.append(word_timing)
-                            
-                            # Create segment with proper bounds checking
-                            if adjusted_end > adjusted_start and adjusted_start >= 0:
-                                adjusted_segment = TranscriptionSegment(
-                                    start=adjusted_start,
-                                    end=adjusted_end, 
-                                    text=seg.get('text', ''),
-                                    words=word_timings if word_timings else None
-                                )
-                                clip_segments.append(adjusted_segment)
-                
-                logger.info(f"📝 [{request_id}] Clip {i+1} ({start_time:.1f}s-{end_time:.1f}s) has {len(clip_segments)} transcription segments")
-                
-                highlights.append(Highlight(
-                    start_time=start_time,
-                    end_time=end_time,
-                    title=f"Interesting Moment {i+1}",
-                    score=0.7,
-                    transcription_segments=clip_segments
-                ))
-            try:
-                # Try AI analysis first
-                highlights = await clip_analyzer.analyze_video(video_path, options)
-                logger.info(f"📊 [{request_id}] AI analysis complete: {len(highlights)} highlights found")
+                                        # Include words that overlap with the clip timeframe (more inclusive)
+                                        if word_start < end_time and word_end > start_time:
+                                            # Adjust word timing to be relative to clip start
+                                            adjusted_word_start = max(0, word_start - start_time)
+                                            adjusted_word_end = min(end_time - start_time, word_end - start_time)
+                                            
+                                            word_timing = WordTiming(
+                                                start=adjusted_word_start,
+                                                end=adjusted_word_end,
+                                                text=word_dict.get('word', word_dict.get('text', '')),
+                                                word=word_dict.get('word', word_dict.get('text', ''))
+                                            )
+                                            word_timings.append(word_timing)
+                                
+                                # Create segment with proper bounds checking
+                                if adjusted_end > adjusted_start and adjusted_start >= 0:
+                                    adjusted_segment = TranscriptionSegment(
+                                        start=adjusted_start,
+                                        end=adjusted_end, 
+                                        text=seg.get('text', ''),
+                                        words=word_timings if word_timings else None
+                                    )
+                                    clip_segments.append(adjusted_segment)
+                    
+                    logger.info(f"📝 [{request_id}] Clip {i+1} ({start_time:.1f}s-{end_time:.1f}s) has {len(clip_segments)} transcription segments")
+                    
+                    highlights.append(Highlight(
+                        start_time=start_time,
+                        end_time=end_time,
+                        title=f"Interesting Moment {i+1}",
+                        score=0.7,
+                        transcription_segments=clip_segments
+                    ))
                 
                 # Enhance AI-generated highlights with proper transcription integration
                 if transcript and transcript.get('segments'):
@@ -2243,9 +2279,29 @@ async def process_video_background_enhanced(
                 from utils.models import Highlight, TranscriptionSegment, WordTiming
                 highlights = []
                 
+                # Import random for randomized durations
+                import random
+                
+                # Get duration range from options
+                def get_duration_range_fb(clip_length):
+                    if clip_length == "<30s":
+                        return (15, 30)
+                    elif clip_length == "30-60s":
+                        return (30, 60)
+                    elif clip_length == "60-90s":
+                        return (60, 90)
+                    else:
+                        return (20, 45)
+                
+                min_dur, max_dur = get_duration_range_fb(options.clipLength)
+                
                 for i in range(min(options.clipCount, 4)):  # Create up to 4 fallback clips
+                    # Generate random duration for this clip
+                    target_duration = random.uniform(min_dur, max_dur)
+                    logger.info(f"🎲 [{request_id}] Final fallback clip {i+1}: Random duration = {target_duration:.1f}s (range: {min_dur}-{max_dur}s)")
+                    
                     start_time = i * 60  # 60 seconds apart
-                    end_time = min(start_time + 45, video_duration)  # 45 second clips, bounded by video duration
+                    end_time = min(start_time + target_duration, video_duration)  # Use random duration, bounded by video duration
                     
                     # Skip if start time is beyond video duration
                     if start_time >= video_duration:
