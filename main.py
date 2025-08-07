@@ -1720,7 +1720,7 @@ async def process_ai_enhanced_video_background(
         # Initialize job steps
         await job_mgr.initialize_job_steps(job_id)
         
-        # Update initial job status
+        # Update initial job status - AI Enhanced has 5 progress points: 0, 20, 40, 60, 80, 100
         await job_mgr.update_job_status(
             job_id, "processing", 0.0, 
             "Starting AI-enhanced video processing with captions", 
@@ -1818,7 +1818,7 @@ async def process_ai_enhanced_video_background(
         # Step 5: Upload clips to cloud storage
         await job_mgr.update_step_status(job_id, "storage_upload", "processing", 0.0)
         await job_mgr.update_job_status(
-            job_id, "processing", 90.0, 
+            job_id, "processing", 60.0, 
             "Saving AI-enhanced clips to your library...", 
             "Storage Upload"
         )
@@ -1868,6 +1868,13 @@ async def process_ai_enhanced_video_background(
         
         # Final completion
         await job_mgr.update_job_status(
+            job_id, "processing", 80.0, 
+            f"Finalizing AI-enhanced clips with captions...", 
+            "Finalizing"
+        )
+        
+        # Final completion
+        await job_mgr.update_job_status(
             job_id, "completed", 100.0, 
             f"Successfully created {len(clips)} AI-enhanced clips with captions ({len(uploaded_clips)} uploaded)", 
             "Completed"
@@ -1911,7 +1918,7 @@ async def process_video_background_enhanced(
         # Initialize job steps
         await job_mgr.initialize_job_steps(job_id)
         
-        # Update initial job status
+        # Update initial job status - Standard has 7 progress points: 0, 14, 28, 42, 56, 70, 84, 100
         await job_mgr.update_job_status(
             job_id, "processing", 0.0, 
             "Initializing job components for video processing", 
@@ -1931,7 +1938,7 @@ async def process_video_background_enhanced(
         if youtube_url:
             logger.info(f"📥 [{request_id}] Downloading video from URL: {youtube_url[:100]}...")
             await job_mgr.update_job_status(
-                job_id, "processing", 10.0, 
+                job_id, "processing", 14.0, 
                 "Downloading video from YouTube with enhanced quality", 
                 "Video Download"
             )
@@ -1987,7 +1994,7 @@ async def process_video_background_enhanced(
         await job_mgr.update_step_status(job_id, "ai_analysis", "processing", 0.0)
         logger.info(f"🔍 [{request_id}] Starting enhanced AI analysis: {video_path}")
         await job_mgr.update_job_status(
-            job_id, "processing", 30.0, 
+            job_id, "processing", 28.0, 
             "Analyzing video content with enhanced AI algorithms", 
             "AI Analysis"
         )
@@ -2342,7 +2349,7 @@ async def process_video_background_enhanced(
         await job_mgr.update_step_status(job_id, "video_processing", "processing", 0.0)
         logger.info(f"🎥 [{request_id}] Processing {len(highlights)} highlights with ULTRA quality and MASSIVE fonts")
         await job_mgr.update_job_status(
-            job_id, "processing", 40.0, 
+            job_id, "processing", 55.0, 
             f"Generating {len(highlights)} video clips", 
             "Video Processing"
         )
@@ -2418,7 +2425,7 @@ async def process_video_background_enhanced(
         if hasattr(video_proc, 'generate_enhanced_thumbnails') and clips:
             logger.info(f"🖼️ [{request_id}] Generating enhanced thumbnails for {len(clips)} clips")
             await job_mgr.update_job_status(
-                job_id, "processing", 85.0, 
+                job_id, "processing", 70.0, 
                 "Generating enhanced thumbnails", 
                 "Thumbnail Generation"
             )
@@ -2428,7 +2435,7 @@ async def process_video_background_enhanced(
                 logger.info(f"✅ [{request_id}] Enhanced thumbnails generated (will be uploaded with clips)")
                 await job_mgr.update_step_status(job_id, "thumbnail_generation", "completed", 100.0)
             except Exception as thumb_error:
-                await job_mgr.update_step_status(job_id, "thumbnail_generation", "error", 50.0, str(thumb_error))
+                await job_mgr.update_step_status(job_id, "thumbnail_generation", "error", 75.0, str(thumb_error))
                 logger.warning(f"⚠️ [{request_id}] Thumbnail generation failed: {str(thumb_error)}")
                 # Don't fail the entire job for thumbnail errors
         
@@ -2460,7 +2467,7 @@ async def process_video_background_enhanced(
             # Upload clips to Supabase Storage
             logger.info(f"📤 [{request_id}] Uploading {len(clips)} clips to Supabase Storage")
             await job_mgr.update_job_status(
-                job_id, "processing", 90.0, 
+                job_id, "processing", 85.0, 
                 "Saving clips to your library...", 
                 "Storage Upload"
             )

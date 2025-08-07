@@ -24,6 +24,7 @@ from .viral_potential import (
 )
 from .pycaps_service import PyCapsService  # PyCaps import
 from .transcription_service import TranscriptionService
+from .face_tracking_service import FaceTrackingService
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,15 @@ class VideoProcessor:
         # Initialize PyCaps caption service
         self.caption_service = PyCapsService()
         
-        logger.info("🎬 Video Processor initialized with PyCaps captions")
+        # Initialize Face Tracking Service for auto face tracking in vertical clips
+        try:
+            self.face_tracking_service = FaceTrackingService()
+            logger.info("🎯 Face tracking service initialized for auto face detection")
+        except Exception as e:
+            logger.warning(f"⚠️ Face tracking service failed to initialize: {str(e)}")
+            self.face_tracking_service = None
+        
+        logger.info("🎬 Video Processor initialized with PyCaps captions and Face Tracking")
         logger.info(f"📁 Directories: output={self.output_dir}, temp={self.temp_dir}")
     
     async def process_highlights(
@@ -142,7 +151,10 @@ class VideoProcessor:
         has_background_music = options.backgroundMusic and options.backgroundMusic.strip()
         has_layout_change = options.layout and options.layout != Layout.FIT_WITH_BLUR  # Default layout
         
-        needs_filtering = has_color_grading or has_game_video or has_background_music or has_layout_change
+        # 🎯 IMPORTANT: Consider face tracking for vertical layouts as a filtering need
+        has_face_tracking_potential = (options.layout == Layout.VERTICAL and self.face_tracking_service is not None)
+        
+        needs_filtering = has_color_grading or has_game_video or has_background_music or has_layout_change or has_face_tracking_potential
         
         if not needs_filtering:
             logger.info("⚡ No effects needed - will skip filter processing for faster performance")
@@ -152,6 +164,7 @@ class VideoProcessor:
             if has_game_video: effects.append(f"game:{options.gameVideo}")
             if has_background_music: effects.append(f"music:{options.backgroundMusic}")
             if has_layout_change: effects.append(f"layout:{options.layout}")
+            if has_face_tracking_potential: effects.append("🎯 AI face tracking")
             logger.info(f"🎨 Effects needed: {', '.join(effects)}")
         
         return needs_filtering
@@ -179,8 +192,8 @@ class VideoProcessor:
                 
                 # Step 2: Apply filters and effects (without captions) - only if needed
                 if self._needs_filtering(options):
-                    processed_path = await self._apply_filters(
-                        temp_extracted, options, highlight, video_info, has_words, hook_title
+                    processed_path = await self._apply_filters_with_source(
+                        temp_extracted, options, highlight, video_info, has_words, hook_title, video_path
                     )
                 else:
                     # Skip filtering for faster processing when no effects needed
@@ -438,9 +451,44 @@ class VideoProcessor:
         has_words: bool,
         hook_title: str = None
     ) -> str:
-        """Apply all filters and effects to the video"""
+        """Apply all filters and effects to the video with AI face tracking"""
         try:
             output_path = input_path.replace('.mp4', '_filtered.mp4')
+            
+            # For vertical clips, we need to get the original video path for face tracking
+            # since input_path is already extracted clip, we need the original source
+            original_video_path = None
+            
+            # Find the original video path from the temp file name pattern
+            # This is a bit hacky but necessary for face tracking analysis
+            import re
+            if 'temp_extracted_' in input_path:
+                # We need to pass the original video path, but for now use input_path
+                # In future iterations, we should pass original_video_path as parameter
+                original_video_path = input_path
+            
+            async def _process_async():
+                # Get target dimensions
+                target_width, target_height = self._get_target_dimensions(options.layout)
+                
+                # Load input
+                input_stream = ffmpeg.input(input_path)
+                video = input_stream.video
+                audio = input_stream.audio
+                
+                # Apply layout transformation WITH ADVANCED FACE TRACKING for vertical clips
+                if options.layout == Layout.VERTICAL and original_video_path:
+                    try:
+                        video = await self._apply_layout_with_face_tracking(
+                            original_video_path, video, options.layout, target_width, target_height, highlight
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ Advanced face tracking failed: {str(e)}, using standard layout")
+                        video = self._apply_layout(video, options.layout, target_width, target_height)
+                else:
+                    video = self._apply_layout(video, options.layout, target_width, target_height)
+                
+                return video, audio, target_width, target_height
             
             def _process():
                 # Get target dimensions
@@ -451,7 +499,7 @@ class VideoProcessor:
                 video = input_stream.video
                 audio = input_stream.audio
                 
-                # Apply layout transformation
+                # Apply standard layout transformation (fallback)
                 video = self._apply_layout(video, options.layout, target_width, target_height)
                 
                 # Apply color grading
@@ -486,11 +534,204 @@ class VideoProcessor:
                 
                 ffmpeg.run(output, overwrite_output=True, capture_stdout=True, capture_stderr=True)
             
-            # Add timeout protection for complex filtering
+            # Try advanced processing with face tracking for vertical clips
+            if options.layout == Layout.VERTICAL and original_video_path and self.face_tracking_service:
+                try:
+                    # Get processed video and audio with face tracking
+                    video, audio, target_width, target_height = await _process_async()
+                    
+                    # Apply remaining filters in executor
+                    def _apply_remaining_filters():
+                        # Apply color grading
+                        if options.colorGrading and options.colorGrading != 'None':
+                            video_processed = self._apply_color_grading(video, options.colorGrading)
+                        else:
+                            video_processed = video
+                        
+                        # Add game video overlay if specified
+                        if options.gameVideo and options.gameVideo.strip():
+                            video_processed = self._add_game_overlay(
+                                video_processed, options.gameVideo, target_width, target_height, 
+                                highlight.end_time - highlight.start_time
+                            )
+                        
+                        # Mix background music if specified
+                        if options.backgroundMusic and options.backgroundMusic.strip():
+                            audio_processed = self._mix_background_music(
+                                audio, options.backgroundMusic, 
+                                highlight.end_time - highlight.start_time
+                            )
+                        else:
+                            audio_processed = audio
+                        
+                        # Output with optimized settings
+                        output = ffmpeg.output(
+                            video_processed, audio_processed, output_path,
+                            vcodec='libx264',
+                            acodec='aac',
+                            **self._get_quality_settings(options.qualityLevel)
+                        )
+                        
+                        ffmpeg.run(output, overwrite_output=True, capture_stdout=True, capture_stderr=True)
+                    
+                    await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(None, _apply_remaining_filters),
+                        timeout=600
+                    )
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Advanced face tracking processing failed: {str(e)}, falling back to standard processing")
+                    # Fallback to standard processing
+                    await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(None, _process),
+                        timeout=600
+                    )
+            else:
+                # Standard processing without face tracking
+                await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, _process),
+                    timeout=600  # Increased to 10 minute timeout for complex operations
+                )
+            
+            return output_path
+            
+        except asyncio.TimeoutError:
+            logger.error(f"❌ Filter processing timed out after 10 minutes")
+            logger.warning(f"⚠️ Returning unfiltered clip due to timeout")
+            return input_path
+        except Exception as e:
+            logger.error(f"❌ Error applying filters: {str(e)}")
+            logger.warning(f"⚠️ Returning unfiltered clip due to error")
+            return input_path
+    
+    async def _apply_filters_with_source(
+        self, 
+        input_path: str, 
+        options: ProcessingOptions, 
+        highlight: Highlight, 
+        video_info: Dict[str, Any],
+        has_words: bool,
+        hook_title: str = None,
+        original_video_path: str = None
+    ) -> str:
+        """Apply all filters and effects to the video with AI face tracking using original video source"""
+        try:
+            output_path = input_path.replace('.mp4', '_filtered.mp4')
+            
+            # For vertical clips with face tracking, use the original video path for analysis
+            if options.layout == Layout.VERTICAL and self.face_tracking_service and original_video_path:
+                try:
+                    logger.info("🎯 PROCESSING VERTICAL CLIP WITH ADVANCED AI FACE TRACKING...")
+                    
+                    # Get target dimensions
+                    target_width, target_height = self._get_target_dimensions(options.layout)
+                    
+                    # Load input (already extracted clip)
+                    input_stream = ffmpeg.input(input_path)
+                    video = input_stream.video
+                    audio = input_stream.audio
+                    
+                    # Apply advanced face tracking layout
+                    video = await self._apply_layout_with_face_tracking(
+                        original_video_path, video, options.layout, target_width, target_height, highlight
+                    )
+                    
+                    # Apply remaining filters synchronously in executor
+                    def _apply_remaining_filters():
+                        # Apply color grading
+                        processed_video = video
+                        if options.colorGrading and options.colorGrading != 'None':
+                            processed_video = self._apply_color_grading(processed_video, options.colorGrading)
+                        
+                        # Add game video overlay if specified
+                        if options.gameVideo and options.gameVideo.strip():
+                            processed_video = self._add_game_overlay(
+                                processed_video, options.gameVideo, target_width, target_height, 
+                                highlight.end_time - highlight.start_time
+                            )
+                        
+                        # Mix background music if specified
+                        processed_audio = audio
+                        if options.backgroundMusic and options.backgroundMusic.strip():
+                            processed_audio = self._mix_background_music(
+                                processed_audio, options.backgroundMusic, 
+                                highlight.end_time - highlight.start_time
+                            )
+                        
+                        # Output with optimized settings
+                        output = ffmpeg.output(
+                            processed_video, processed_audio, output_path,
+                            vcodec='libx264',
+                            acodec='aac',
+                            **self._get_quality_settings(options.qualityLevel)
+                        )
+                        
+                        ffmpeg.run(output, overwrite_output=True, capture_stdout=True, capture_stderr=True)
+                    
+                    # Run the remaining filters in executor with timeout
+                    await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(None, _apply_remaining_filters),
+                        timeout=600
+                    )
+                    
+                    logger.info("✅ ADVANCED AI FACE TRACKING PROCESSING COMPLETE!")
+                    return output_path
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Advanced face tracking failed: {str(e)}, falling back to standard processing")
+                    # Fall through to standard processing
+            
+            # Standard processing (fallback or non-vertical clips)
+            def _process_standard():
+                # Get target dimensions
+                target_width, target_height = self._get_target_dimensions(options.layout)
+                
+                # Load input
+                input_stream = ffmpeg.input(input_path)
+                video = input_stream.video
+                audio = input_stream.audio
+                
+                # Apply standard layout transformation
+                video = self._apply_layout(video, options.layout, target_width, target_height)
+                
+                # Apply color grading
+                if options.colorGrading and options.colorGrading != 'None':
+                    video = self._apply_color_grading(video, options.colorGrading)
+                
+                # Add game video overlay if specified
+                if options.gameVideo and options.gameVideo.strip():
+                    video = self._add_game_overlay(
+                        video, options.gameVideo, target_width, target_height, 
+                        highlight.end_time - highlight.start_time
+                    )
+                else:
+                    logger.debug("⚡ Skipping game overlay - none specified")
+                
+                # Mix background music if specified
+                if options.backgroundMusic and options.backgroundMusic.strip():
+                    audio = self._mix_background_music(
+                        audio, options.backgroundMusic, 
+                        highlight.end_time - highlight.start_time
+                    )
+                else:
+                    logger.debug("⚡ Skipping background music - none specified")
+                
+                # Output with optimized settings
+                output = ffmpeg.output(
+                    video, audio, output_path,
+                    vcodec='libx264',
+                    acodec='aac',
+                    **self._get_quality_settings(options.qualityLevel)
+                )
+                
+                ffmpeg.run(output, overwrite_output=True, capture_stdout=True, capture_stderr=True)
+            
+            # Run standard processing
             await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, _process),
-                timeout=600  # Increased to 10 minute timeout for complex operations
+                asyncio.get_event_loop().run_in_executor(None, _process_standard),
+                timeout=600  # 10 minute timeout for complex operations
             )
+            
             return output_path
             
         except asyncio.TimeoutError:
@@ -511,12 +752,95 @@ class VideoProcessor:
         else:  # FIT_WITH_BLUR - assume 16:9 landscape
             return (1920, 1080)  # 16:9 landscape, minimum 720p height
     
-    def _apply_layout(self, video_stream, layout: Layout, width: int, height: int):
-        """Apply layout transformation"""
-        if layout == Layout.VERTICAL:
-            # For TikTok: Crop to fill the frame instead of padding with black bars
+    async def _apply_layout_with_face_tracking(self, input_video_path: str, video_stream, layout: Layout, width: int, height: int, highlight: Highlight):
+        """Apply layout transformation with advanced AI face tracking for vertical clips"""
+        if layout == Layout.VERTICAL and self.face_tracking_service:
+            try:
+                # 🎯 ADVANCED AI FACE TRACKING FOR VERTICAL CLIPS - USE ORIGINAL FULL VIDEO
+                logger.info("🎯 Analyzing ORIGINAL FULL VIDEO for faces using MediaPipe AI...")
+                
+                # IMPORTANT: Analyze faces in the ORIGINAL full video (not the extracted clip)
+                # This ensures we get better face detection results from the full context
+                face_tracking_data = await self.face_tracking_service.analyze_video_faces(
+                    input_video_path,  # This is the ORIGINAL video path with full context
+                    start_time=highlight.start_time, 
+                    end_time=highlight.end_time
+                )
+                
+                if face_tracking_data.has_faces and face_tracking_data.confidence_score > 0.3:  # Lower threshold for better detection
+                    # Get the ORIGINAL video dimensions to calculate crop region
+                    probe = ffmpeg.probe(input_video_path)
+                    video_stream_info = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
+                    original_width = int(video_stream_info['width'])
+                    original_height = int(video_stream_info['height'])
+                    
+                    # Calculate optimal crop region based on detected faces from ORIGINAL video
+                    crop_x, crop_y, crop_width, crop_height = self.face_tracking_service.get_optimal_crop_region(
+                        face_tracking_data, original_width, original_height, width, height
+                    )
+                    
+                    # Apply AI-calculated face-centered crop to the video stream
+                    # The video_stream here is from the already extracted clip, but we use crop parameters from original
+                    video = video_stream.filter('crop', crop_width, crop_height, crop_x, crop_y)
+                    video = video.filter('scale', width, height, flags='lanczos')  # High-quality scaling
+                    
+                    logger.info(f"✅ Applied SMART FACE TRACKING: Faces detected with confidence {face_tracking_data.confidence_score:.2f}")
+                    logger.info(f"📊 Face center: {face_tracking_data.average_face_center}, Crop region: ({crop_x}, {crop_y}, {crop_width}, {crop_height})")
+                    logger.info(f"🎯 Original video: {original_width}x{original_height}, Target: {width}x{height}")
+                    
+                    return video
+                    
+                else:
+                    logger.info(f"⚠️ No confident faces detected (confidence: {face_tracking_data.confidence_score:.2f}), using optimized vertical crop")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Face tracking failed: {str(e)}, falling back to optimized crop")
+                import traceback
+                logger.debug(f"Face tracking error traceback: {traceback.format_exc()}")
+            
+            # Fallback to OPTIMIZED vertical crop if face tracking fails
+            # Use a smarter crop that focuses on the upper-center area where faces usually are
             video = video_stream.filter('scale', width, height, force_original_aspect_ratio='increase')
-            video = video.filter('crop', width, height, '(iw-ow)/2', '(ih-oh)*0.25')  # Slight upward bias for faces
+            # Crop with slight upward bias (20% from top instead of center) for better face framing
+            video = video.filter('crop', width, height, '(iw-ow)/2', '(ih-oh)*0.15')  # 15% from top for faces
+            logger.info("🎯 Applied OPTIMIZED vertical crop with face-area bias (face tracking fallback)")
+            
+        elif layout == Layout.VERTICAL:
+            # Face tracking service not available, use optimized standard crop
+            video = video_stream.filter('scale', width, height, force_original_aspect_ratio='increase')
+            video = video.filter('crop', width, height, '(iw-ow)/2', '(ih-oh)*0.2')
+            logger.info("🎯 Applied STANDARD vertical crop (no face tracking available)")
+            
+        elif layout == Layout.SQUARE:
+            # Square content: crop to square, then fit to 9:16 with padding
+            video = video_stream.filter('crop', 'min(iw,ih)', 'min(iw,ih)')
+            video = video.filter('scale', width, height, force_original_aspect_ratio='decrease')
+            video = video.filter('pad', width, height, '(ow-iw)/2', '(oh-ih)/2', color='black')
+            
+        elif layout == Layout.FIT_WITH_BLUR:
+            # Create blurred background
+            blur_bg = video_stream.filter('scale', width, height, force_original_aspect_ratio='increase')
+            blur_bg = blur_bg.filter('crop', width, height)
+            blur_bg = blur_bg.filter('gblur', sigma=30)
+            blur_bg = blur_bg.filter('eq', brightness=-0.4)
+            
+            # Scale main video
+            main = video_stream.filter('scale', width, height, force_original_aspect_ratio='decrease')
+
+            # Overlay
+            video = ffmpeg.filter([blur_bg, main], 'overlay', '(W-w)/2', '(H-h)/2')
+        else:
+            video = video_stream
+        
+        return video
+    
+    def _apply_layout(self, video_stream, layout: Layout, width: int, height: int):
+        """Apply layout transformation (legacy method for backward compatibility)"""
+        if layout == Layout.VERTICAL:
+            # Standard vertical crop without face tracking
+            video = video_stream.filter('scale', width, height, force_original_aspect_ratio='increase')
+            video = video.filter('crop', width, height, '(iw-ow)/2', '(ih-oh)*0.2')
+            logger.info("🎯 Applied STANDARD vertical crop (legacy method)")
             
         elif layout == Layout.SQUARE:
             # Square content: crop to square, then fit to 9:16 with padding

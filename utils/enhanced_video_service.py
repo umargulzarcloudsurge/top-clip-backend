@@ -67,12 +67,9 @@ class EnhancedVideoService:
             video_duration = await self._get_video_duration(video_path)
             logger.info(f"📹 [{request_id}] Video duration: {video_duration:.1f}s")
             
-            # Update progress
-            await job_manager.update_job_status(
-                job_id, "processing", 10.0,
-                "Analyzing video content and generating transcription",
-                "Content Analysis"
-            )
+            # Progress tracking is handled by the main process to avoid conflicts
+            # Do not update progress here as it interferes with main.py progress tracking
+            logger.debug(f"📊 [{request_id}] Step 1: Video validation and duration check complete")
             
             # Step 3: Use provided transcript or generate new one (with fallback)
             if transcript and transcript.get('segments'):
@@ -110,12 +107,9 @@ class EnhancedVideoService:
                 logger.error(f"❌ [{request_id}] No highlights generated")
                 raise Exception("Failed to generate any highlights from video content")
             
-            # Update progress
-            await job_manager.update_job_status(
-                job_id, "processing", 40.0,
-                f"Processing {len(highlights)} video clips with captions",
-                "Video Processing"
-            )
+            # Progress tracking is handled by the main process to avoid conflicts
+            # Do not update progress here as it interferes with main.py progress tracking
+            logger.info(f"📊 [{request_id}] Step 2: Ready to process {len(highlights)} video clips with captions")
             
             # Step 5: Process clips with enhanced error handling
             clips = await self._process_clips_with_fallbacks(
