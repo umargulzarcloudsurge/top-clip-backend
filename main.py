@@ -1583,6 +1583,57 @@ async def get_clip(user_id: str, clip_filename: str, request: Request):
         error_response = await handle_api_error(e, "get_clip")
         raise HTTPException(status_code=500, detail=error_response.dict())
 
+@app.get("/api/test-openai-subtitles")
+async def test_openai_subtitles():
+    """Test endpoint for OpenAI subtitle generation"""
+    try:
+        logger.info("🧪 Testing OpenAI subtitle generation service")
+        
+        from utils.openai_subtitle_service import get_openai_subtitle_service
+        
+        # Test connection first
+        subtitle_service = get_openai_subtitle_service()
+        connection_test = await subtitle_service.test_connection()
+        
+        if not connection_test.get('success'):
+            return {
+                "success": False,
+                "error": "OpenAI connection test failed",
+                "details": connection_test
+            }
+        
+        # Test subtitle generation for a sample clip
+        test_subtitles = await subtitle_service.generate_subtitles_for_clip(
+            video_title="Test Video",
+            clip_title="Amazing Gaming Moment",
+            clip_duration=30.0,
+            start_time=0.0,
+            context="Gaming highlights with epic moments",
+            style="energetic"
+        )
+        
+        logger.info(f"✅ OpenAI subtitle test successful: {len(test_subtitles.get('segments', []))} segments")
+        
+        return {
+            "success": True,
+            "message": "OpenAI subtitle generation working correctly",
+            "connection_test": connection_test,
+            "sample_subtitles": {
+                "segments_count": len(test_subtitles.get('segments', [])),
+                "duration": test_subtitles.get('duration'),
+                "style": test_subtitles.get('style'),
+                "sample_segments": test_subtitles.get('segments', [])[:3]  # First 3 segments as example
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ OpenAI subtitle test failed: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "OpenAI subtitle generation test failed"
+        }
+
 @app.get("/api/thumbnail/{user_id}/{thumbnail_filename}")
 async def get_thumbnail(user_id: str, thumbnail_filename: str):
     """Enhanced thumbnail endpoint - stream from Supabase Storage"""

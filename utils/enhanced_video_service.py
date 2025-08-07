@@ -16,6 +16,7 @@ from .models import ProcessingOptions, Highlight, ClipResult, TranscriptionSegme
 from .transcription_service import TranscriptionService
 from .video_processor import VideoProcessor
 from .clip_analyzer import ClipAnalyzer
+from .openai_subtitle_service import get_openai_subtitle_service
 
 logger = logging.getLogger(__name__)
 
@@ -684,7 +685,7 @@ class EnhancedVideoService:
         video_duration: float,
         request_id: str
     ) -> List[Highlight]:
-        """Create time-based highlights as ultimate fallback WITH fallback captions"""
+        """Create time-based highlights as ultimate fallback WITH AI-generated subtitles"""
         
         highlights = []
         clip_count = min(options.clipCount or 3, 5)
@@ -693,56 +694,131 @@ class EnhancedVideoService:
         # Distribute clips evenly across video
         interval = max(clip_duration, video_duration / (clip_count + 1))
         
-        # Enhanced fallback captions when no transcription is available
-        fallback_captions = [
-            "🎬 Amazing content ahead!",
-            "⚡ Don't miss this moment!", 
-            "🔥 This is incredible!",
-            "✨ Watch closely!",
-            "💫 Pure entertainment!",
-            "🌟 You won't believe this!",
-            "⭐ Absolutely stunning!",
-            "🎯 Pay attention here!",
-            "🚀 Mind-blowing moment!",
-            "💯 This is epic!"
-        ]
+        logger.info(f"🤖 [{request_id}] Attempting to generate AI-powered subtitles for {clip_count} clips")
         
-        for i in range(clip_count):
-            start_time = i * interval
-            end_time = min(start_time + clip_duration, video_duration)
+        # Try to use OpenAI subtitle service for intelligent captions
+        ai_subtitles_generated = False
+        try:
+            openai_subtitle_service = get_openai_subtitle_service()
             
-            if start_time >= video_duration:
-                break
-            
-            # Create fallback transcription segments with engaging captions
-            duration = end_time - start_time
-            segments_per_highlight = 3  # 3 caption segments per highlight  
-            segment_duration = duration / segments_per_highlight
-            
-            transcription_segments = []
-            for j in range(segments_per_highlight):
-                seg_start = j * segment_duration
-                seg_end = min((j + 1) * segment_duration, duration)
+            # Create clip info for AI subtitle generation
+            clip_info_list = []
+            for i in range(clip_count):
+                start_time = i * interval
+                end_time = min(start_time + clip_duration, video_duration)
                 
-                # Use cycling fallback captions
-                caption_text = fallback_captions[(i * segments_per_highlight + j) % len(fallback_captions)]
+                if start_time >= video_duration:
+                    break
                 
-                transcription_segments.append(TranscriptionSegment(
-                    start=seg_start,
-                    end=seg_end,
-                    text=caption_text,
-                    words=[]
+                duration = end_time - start_time
+                clip_info_list.append({
+                    'title': f"Highlight {i+1}",
+                    'duration': duration,
+                    'start_time': start_time
+                })
+            
+            # Generate AI subtitles for all clips
+            logger.info(f"🎯 [{request_id}] Generating AI subtitles for {len(clip_info_list)} clips...")
+            ai_subtitle_results = await asyncio.wait_for(
+                openai_subtitle_service.generate_multiple_clip_subtitles(
+                    clip_info_list,
+                    video_title="Video Content",
+                    context="Dynamic video content with engaging moments",
+                    style="engaging"
+                ),
+                timeout=60  # 1 minute timeout for AI subtitle generation
+            )
+            
+            if ai_subtitle_results and len(ai_subtitle_results) == len(clip_info_list):
+                logger.info(f"✅ [{request_id}] Successfully generated AI subtitles for {len(ai_subtitle_results)} clips")
+                ai_subtitles_generated = True
+                
+                # Create highlights with AI-generated subtitles
+                for i, (clip_info, ai_subtitle_data) in enumerate(zip(clip_info_list, ai_subtitle_results)):
+                    start_time = clip_info['start_time']
+                    duration = clip_info['duration']
+                    end_time = start_time + duration
+                    
+                    # Convert AI subtitle segments to TranscriptionSegment objects
+                    transcription_segments = []
+                    for ai_segment in ai_subtitle_data.get('segments', []):
+                        transcription_segments.append(TranscriptionSegment(
+                            start=ai_segment['start'],
+                            end=ai_segment['end'],
+                            text=ai_segment['text'],
+                            words=[]  # AI service provides estimated word timings, but we'll keep it simple
+                        ))
+                    
+                    highlights.append(Highlight(
+                        start_time=start_time,
+                        end_time=end_time,
+                        title=f"AI-Enhanced Highlight {i+1}",
+                        score=0.8,  # Higher score for AI-enhanced content
+                        transcription_segments=transcription_segments
+                    ))
+                
+                logger.info(f"🤖 [{request_id}] Created {len(highlights)} highlights with AI-generated subtitles")
+                return highlights
+                
+        except Exception as ai_error:
+            logger.warning(f"⚠️ [{request_id}] AI subtitle generation failed: {str(ai_error)}, falling back to standard captions")
+            ai_subtitles_generated = False
+        
+        # Fallback: Use standard engaging captions if AI generation failed
+        if not ai_subtitles_generated:
+            logger.info(f"📝 [{request_id}] Using fallback engaging captions")
+            
+            # Enhanced fallback captions when AI is not available
+            fallback_captions = [
+                "🎬 Amazing content ahead!",
+                "⚡ Don't miss this moment!", 
+                "🔥 This is incredible!",
+                "✨ Watch closely!",
+                "💫 Pure entertainment!",
+                "🌟 You won't believe this!",
+                "⭐ Absolutely stunning!",
+                "🎯 Pay attention here!",
+                "🚀 Mind-blowing moment!",
+                "💯 This is epic!"
+            ]
+            
+            for i in range(clip_count):
+                start_time = i * interval
+                end_time = min(start_time + clip_duration, video_duration)
+                
+                if start_time >= video_duration:
+                    break
+                
+                # Create fallback transcription segments with engaging captions
+                duration = end_time - start_time
+                segments_per_highlight = 3  # 3 caption segments per highlight  
+                segment_duration = duration / segments_per_highlight
+                
+                transcription_segments = []
+                for j in range(segments_per_highlight):
+                    seg_start = j * segment_duration
+                    seg_end = min((j + 1) * segment_duration, duration)
+                    
+                    # Use cycling fallback captions
+                    caption_text = fallback_captions[(i * segments_per_highlight + j) % len(fallback_captions)]
+                    
+                    transcription_segments.append(TranscriptionSegment(
+                        start=seg_start,
+                        end=seg_end,
+                        text=caption_text,
+                        words=[]
+                    ))
+                
+                highlights.append(Highlight(
+                    start_time=start_time,
+                    end_time=end_time,
+                    title=f"Highlight {i+1}",
+                    score=0.7,
+                    transcription_segments=transcription_segments
                 ))
             
-            highlights.append(Highlight(
-                start_time=start_time,
-                end_time=end_time,
-                title=f"Highlight {i+1}",
-                score=0.7,
-                transcription_segments=transcription_segments  # NOW WITH CAPTIONS!
-            ))
+            logger.info(f"⏰ [{request_id}] Created {len(highlights)} time-based highlights with fallback captions")
         
-        logger.info(f"⏰ [{request_id}] Created {len(highlights)} time-based highlights WITH fallback captions")
         return highlights
     
     def _generate_title_from_segments(self, segments: List[Dict[str, Any]]) -> str:
