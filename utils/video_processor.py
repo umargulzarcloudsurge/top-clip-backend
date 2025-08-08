@@ -1085,6 +1085,16 @@ class VideoProcessor:
                 video = input_stream.video
                 audio = input_stream.audio
                 
+                # Apply subtitles using the SRT file with enhanced styling
+                # Convert Windows path to proper format for FFmpeg
+                srt_file_path = srt_file.replace('\\', '/')
+                
+                # Simplified subtitle styling - much faster processing
+                # Use basic drawtext filter for better performance and reliability
+                logger.info(f"🎨 Applying subtitles with simplified styling for {style}...")
+                
+                # Use simple subtitles filter with smaller font size
+                video = video.filter('subtitles', srt_file_path, force_style='FontSize=12')
                 # Apply subtitles using the SRT file
                 video = video.filter(
                     'subtitles', 
@@ -1105,10 +1115,10 @@ class VideoProcessor:
                 def _run_ffmpeg():
                     ffmpeg.run(output, overwrite_output=True, capture_stdout=True, capture_stderr=True)
                 
-                # Add timeout protection
+                # Add timeout protection - reduced for faster processing
                 await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(None, _run_ffmpeg),
-                    timeout=480  # 8 minute timeout for subtitle processing
+                    timeout=120  # 2 minute timeout for subtitle processing
                 )
                 
                 logger.info("✅ Captions added successfully with SRT subtitles")
@@ -1124,7 +1134,7 @@ class VideoProcessor:
                         logger.warning(f"⚠️ Failed to cleanup SRT file: {cleanup_error}")
             
         except asyncio.TimeoutError:
-            logger.error("❌ Caption rendering timed out after 8 minutes")
+            logger.error("❌ Caption rendering timed out after 2 minutes")
             return False
         except Exception as e:
             logger.error(f"❌ Error adding captions with FFmpeg: {str(e)}")
