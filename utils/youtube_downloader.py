@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 import random
 import time
 from .cookie_manager import cookie_manager
+from .youtube_proxy_service import proxy_service
+from .cookie_refresh_service import cookie_refresh_service
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +135,7 @@ class YouTubeDownloader:
         return None
     
     def _validate_cookies_file(self, cookies_path: str) -> bool:
-        """Validate that cookies file is in proper Netscape format"""
+        """Validate that cookies file is in proper Netscape format with enhanced checks"""
         try:
             with open(cookies_path, 'r', encoding='utf-8') as file:
                 lines = file.readlines()
@@ -145,6 +147,10 @@ class YouTubeDownloader:
             
             # Validate cookie lines (skip comments and empty lines)
             valid_cookies = 0
+            youtube_cookies = 0
+            essential_cookies = ['SAPISID', 'SSID', 'HSID', 'SID', 'APISID']
+            found_essential = set()
+            
             for line_num, line in enumerate(lines, 1):
                 line = line.strip()
                 if not line or line.startswith('#'):
@@ -161,14 +167,30 @@ class YouTubeDownloader:
                 if not domain or not name:
                     logger.warning(f"Invalid cookie at line {line_num}: missing domain or name")
                     continue
-                    
+                
+                # Check if it's a YouTube cookie
+                if 'youtube.com' in domain or 'google.com' in domain:
+                    youtube_cookies += 1
+                    if name in essential_cookies:
+                        found_essential.add(name)
+                        
                 valid_cookies += 1
             
             if valid_cookies == 0:
                 logger.warning("No valid cookies found in file")
                 return False
+            
+            if youtube_cookies == 0:
+                logger.warning("No YouTube-specific cookies found in file")
+                return False
                 
-            logger.info(f"Cookies file validation passed: {valid_cookies} valid cookies found")
+            # Check for essential authentication cookies
+            missing_essential = set(essential_cookies) - found_essential
+            if missing_essential:
+                logger.warning(f"Missing essential YouTube cookies: {missing_essential}")
+                logger.warning("This may cause authentication issues. Consider refreshing your cookies.")
+                
+            logger.info(f"Cookies validation passed: {valid_cookies} total, {youtube_cookies} YouTube cookies, {len(found_essential)} essential")
             return True
             
         except Exception as e:
@@ -255,6 +277,14 @@ class YouTubeDownloader:
             
             # Check and refresh cookies if needed (runs in background)
             try:
+                # Use the new cookie refresh service
+                refresh_result = await cookie_refresh_service.auto_validate_and_refresh()
+                if refresh_result.get('status') == 'refreshed':
+                    logger.info("🔄 Cookies were automatically refreshed")
+                elif refresh_result.get('status') == 'refresh_failed':
+                    logger.warning("⚠️ Cookie refresh attempted but failed - may need fresh cookies")
+                    
+                # Fallback to old cookie manager if available
                 await cookie_manager.auto_refresh_cookies()
             except Exception as cookie_error:
                 logger.warning(f"Cookie auto-refresh failed: {cookie_error}")
@@ -281,10 +311,16 @@ class YouTubeDownloader:
                         # Setup cookies for video info extraction
                         ydl_opts = self._setup_cookies(ydl_opts)
                         
-                        # Add proxy if available (fallback)
-                        proxy = self._get_random_proxy()
-                        if proxy:
-                            ydl_opts['proxy'] = proxy
+                        # Add proxy if available (enhanced proxy service)
+                        try:
+                            proxy_url = proxy_service.get_proxy_for_ytdlp()
+                            if proxy_url:
+                                ydl_opts['proxy'] = proxy_url
+                                logger.info(f"Using proxy: {proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url}")
+                            else:
+                                logger.warning("No working proxies available for video info extraction")
+                        except Exception as proxy_error:
+                            logger.warning(f"Proxy service error: {proxy_error}")
                         
                         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                             # Add exponential backoff
@@ -538,6 +574,11 @@ class YouTubeDownloader:
                 # Add cookies to this method
                 opts = self._setup_cookies(opts)
                 
+                # Add proxy if available
+                proxy_url = proxy_service.get_proxy_for_ytdlp()
+                if proxy_url:
+                    opts['proxy'] = proxy_url
+                
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     time.sleep(random.uniform(0.5, 1.5))
                     ydl.download([url])
@@ -588,6 +629,11 @@ class YouTubeDownloader:
                 # Add cookies to this method
                 opts = self._setup_cookies(opts)
                 
+                # Add proxy if available
+                proxy_url = proxy_service.get_proxy_for_ytdlp()
+                if proxy_url:
+                    opts['proxy'] = proxy_url
+                
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     time.sleep(random.uniform(1, 2))
                     ydl.download([url])
@@ -634,6 +680,11 @@ class YouTubeDownloader:
                 
                 # Add cookies to this method
                 opts = self._setup_cookies(opts)
+                
+                # Add proxy if available
+                proxy_url = proxy_service.get_proxy_for_ytdlp()
+                if proxy_url:
+                    opts['proxy'] = proxy_url
                 
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     time.sleep(random.uniform(1, 2))
@@ -736,6 +787,11 @@ class YouTubeDownloader:
                 
                 # Add cookies to this method (now it actually uses cookies!)
                 opts = self._setup_cookies(opts)
+                
+                # Add proxy if available
+                proxy_url = proxy_service.get_proxy_for_ytdlp()
+                if proxy_url:
+                    opts['proxy'] = proxy_url
                 
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     time.sleep(random.uniform(2, 4))

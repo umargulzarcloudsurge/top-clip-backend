@@ -127,13 +127,13 @@ class EnhancedVideoService:
             else:
                 logger.info(f"🎙️ [{request_id}] No transcript provided, generating new transcription")
                 transcript, transcription_strategies = await self._get_transcription_with_fallback(
-                    video_path, request_id, disable_assembly_ai
+                    video_path, request_id, disable_assembly_ai, error_logger
                 )
                 all_strategy_results.extend(transcription_strategies)
             
             # Step 4: Generate highlights (with multiple fallback strategies)
             highlights, highlight_strategies = await self._generate_highlights_with_fallbacks(
-                video_path, transcript, options, video_duration, request_id
+                video_path, transcript, options, video_duration, request_id, error_logger
             )
             all_strategy_results.extend(highlight_strategies)
             
@@ -226,7 +226,8 @@ class EnhancedVideoService:
         self, 
         video_path: str, 
         request_id: str,
-        disable_assembly_ai: bool = True
+        disable_assembly_ai: bool = True,
+        error_logger=None
     ) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
         """Get transcription with fallback mechanisms"""
         logger.info(f"🎙️ [{request_id}] Generating transcription (AssemblyAI disabled: {disable_assembly_ai})")
@@ -270,8 +271,8 @@ class EnhancedVideoService:
         except asyncio.TimeoutError:
             elapsed = (datetime.now() - start_time).total_seconds()
             logger.error(f"❌ [{request_id}] Transcription timed out after 5 minutes")
-            # Use the error_logger from the outer scope
-            if 'error_logger' in locals():
+            # Use the error_logger if provided
+            if error_logger:
                 error_logger.log_strategy_timeout('OpenAI Whisper', 'Transcription', 300)
             strategy_results.append({
                 'step': 'Transcription',
@@ -284,8 +285,8 @@ class EnhancedVideoService:
         except Exception as e:
             elapsed = (datetime.now() - start_time).total_seconds()
             logger.error(f"❌ [{request_id}] Transcription failed: {str(e)}, continuing without captions")
-            # Use the error_logger from the outer scope
-            if 'error_logger' in locals():
+            # Use the error_logger if provided
+            if error_logger:
                 error_logger.log_strategy_error('OpenAI Whisper', 'Transcription', e, {
                     'video_path': video_path,
                     'disable_assembly_ai': disable_assembly_ai,
@@ -316,7 +317,8 @@ class EnhancedVideoService:
         transcript: Dict[str, Any],
         options: ProcessingOptions,
         video_duration: float,
-        request_id: str
+        request_id: str,
+        error_logger=None
     ) -> tuple[List[Highlight], List[Dict[str, Any]]]:
         """Generate highlights with multiple fallback strategies"""
         
@@ -352,7 +354,8 @@ class EnhancedVideoService:
         except asyncio.TimeoutError:
             elapsed = (datetime.now() - start_time).total_seconds()
             logger.error(f"❌ [{request_id}] AI analysis timed out after 3 minutes")
-            error_logger.log_strategy_timeout('AI Analysis', 'Highlight Generation', 180)
+            if error_logger:
+                error_logger.log_strategy_timeout('AI Analysis', 'Highlight Generation', 180)
             strategy_results.append({
                 'step': 'Highlight Generation',
                 'strategy': 'AI Analysis',
@@ -363,11 +366,12 @@ class EnhancedVideoService:
         except Exception as e:
             elapsed = (datetime.now() - start_time).total_seconds()
             logger.error(f"❌ [{request_id}] AI analysis failed: {str(e)}, using fallback")
-            error_logger.log_strategy_error('AI Analysis', 'Highlight Generation', e, {
-                'video_path': video_path,
-                'options': str(options),
-                'elapsed_time': elapsed
-            })
+            if error_logger:
+                error_logger.log_strategy_error('AI Analysis', 'Highlight Generation', e, {
+                    'video_path': video_path,
+                    'options': str(options),
+                    'elapsed_time': elapsed
+                })
             strategy_results.append({
                 'step': 'Highlight Generation',
                 'strategy': 'AI Analysis',
@@ -400,12 +404,13 @@ class EnhancedVideoService:
             except Exception as e:
                 elapsed = (datetime.now() - start_time).total_seconds()
                 logger.error(f"❌ [{request_id}] Transcription-based generation failed: {str(e)}")
-                error_logger.log_strategy_error('Transcription-Based', 'Highlight Generation', e, {
-                    'transcript_segments': len(transcript.get('segments', [])),
-                    'video_duration': video_duration,
-                    'options': str(options),
-                    'elapsed_time': elapsed
-                })
+                if error_logger:
+                    error_logger.log_strategy_error('Transcription-Based', 'Highlight Generation', e, {
+                        'transcript_segments': len(transcript.get('segments', [])),
+                        'video_duration': video_duration,
+                        'options': str(options),
+                        'elapsed_time': elapsed
+                    })
                 strategy_results.append({
                     'step': 'Highlight Generation',
                     'strategy': 'Transcription-Based',

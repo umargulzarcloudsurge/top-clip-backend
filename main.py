@@ -626,10 +626,51 @@ async def get_video_info(url: str):
         # Enhanced video info retrieval with longer timeout
         try:
             logger.info(f"🔍 [{request_id}] Calling youtube_downloader.get_video_info...")
-            info = await asyncio.wait_for(
-                youtube_downloader.get_video_info(url),
-                timeout=60.0  # 60 second timeout to allow for multiple strategies
-            )
+            
+            # Check if enhanced YouTube downloader is working properly
+            try:
+                info = await asyncio.wait_for(
+                    youtube_downloader.get_video_info(url),
+                    timeout=60.0  # 60 second timeout to allow for multiple strategies
+                )
+            except ImportError as import_error:
+                logger.error(f"❌ [{request_id}] Import error in enhanced YouTube downloader: {import_error}")
+                # Try to use basic yt-dlp as fallback
+                import yt_dlp
+                logger.info(f"🔄 [{request_id}] Falling back to basic yt-dlp...")
+                
+                ydl_opts = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'socket_timeout': 30,
+                    'retries': 3,
+                }
+                
+                def _get_info():
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        return ydl.extract_info(url, download=False)
+                
+                loop = asyncio.get_event_loop()
+                info = await loop.run_in_executor(None, _get_info)
+            except Exception as enhanced_error:
+                logger.warning(f"⚠️ [{request_id}] Enhanced downloader failed: {enhanced_error}")
+                # Try to use basic yt-dlp as fallback
+                import yt_dlp
+                logger.info(f"🔄 [{request_id}] Falling back to basic yt-dlp...")
+                
+                ydl_opts = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'socket_timeout': 30,
+                    'retries': 3,
+                }
+                
+                def _get_info():
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        return ydl.extract_info(url, download=False)
+                
+                loop = asyncio.get_event_loop()
+                info = await loop.run_in_executor(None, _get_info)
         except asyncio.TimeoutError:
             logger.error(f"❌ [{request_id}] Video info request timed out after 60 seconds")
             raise HTTPException(status_code=408, detail="Video info request timed out after 60 seconds. YouTube may be blocking access. Please try again later.")
