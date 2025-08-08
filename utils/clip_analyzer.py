@@ -21,23 +21,13 @@ class ClipAnalyzer:
     def __init__(self):
         self.transcription_service = TranscriptionService()
         
-        # Initialize OpenAI client with proper error handling and version detection
+        # Initialize OpenAI client with proper error handling
         try:
             import openai
             api_key = os.getenv('OPENAI_API_KEY')
             if api_key:
-                # Check OpenAI version and use appropriate API
-                if hasattr(openai, '__version__') and openai.__version__.startswith('1.'):
-                    # OpenAI v1.x API
-                    self.openai_client = openai.OpenAI(api_key=api_key)
-                    self.openai_version = 'v1'
-                    logger.info("✅ OpenAI v1.x client for ClipAnalyzer initialized successfully")
-                else:
-                    # OpenAI v0.x API
-                    openai.api_key = api_key
-                    self.openai_client = openai
-                    self.openai_version = 'v0'
-                    logger.info("✅ OpenAI v0.x client for ClipAnalyzer initialized successfully")
+                self.openai_client = openai.OpenAI(api_key=api_key)
+                logger.info("✅ OpenAI client for ClipAnalyzer initialized successfully")
             else:
                 self.openai_client = None
                 logger.warning("❌ OpenAI API key not found. Subtitles will not work.")

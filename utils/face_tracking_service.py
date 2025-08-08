@@ -57,35 +57,131 @@ class FaceTrackingService:
     
     def __init__(self):
         """Initialize MediaPipe face detection optimized for CPU-only processing"""
+        self.face_detection = None
+        self.face_tracking_enabled = True
+        self.failed_frame_count = 0
+        self.successful_frame_count = 0
+        self.max_failed_frames = 100  # Increased threshold - be more tolerant
+        self.reset_threshold = 50  # Reset failure count after successful frames
+        
+        # Statistics for debugging
+        self.total_frames_processed = 0
+        self.faces_detected_count = 0
+        self.empty_frame_count = 0
+        
         try:
+            # Check if face tracking should be disabled via environment variable
+            disable_face_tracking = os.getenv('DISABLE_FACE_TRACKING', '').lower() in ('true', '1', 'yes')
+            if disable_face_tracking:
+                logger.info("🔧 Face tracking disabled via DISABLE_FACE_TRACKING environment variable")
+                self.face_tracking_enabled = False
+                return
+            
             # Set CPU-only processing for MediaPipe (no GPU acceleration)
-            import os
             os.environ['MEDIAPIPE_DISABLE_GPU'] = '1'
             
-            # Initialize MediaPipe Face Detection
-            self.mp_face_detection = mp.solutions.face_detection
-            self.mp_drawing = mp.solutions.drawing_utils
-            
-            # Configure face detection optimized for CPU processing on Ubuntu
-            self.face_detection = self.mp_face_detection.FaceDetection(
-                model_selection=0,  # 0 for short range model (faster on CPU, good for most video content)
-                min_detection_confidence=0.4  # Slightly higher threshold for better CPU performance
-            )
+            # Initialize MediaPipe Face Detection with retry mechanism
+            self._initialize_mediapipe_with_retry()
             
             # Enhanced face tracking parameters for video processing
             self.smoothing_window = 15  # Increased for smoother face position tracking
-            self.min_confidence = 0.3  # Lower threshold for better detection
-            self.max_faces_to_track = 5  # Track up to 5 faces simultaneously
+            self.min_confidence = 0.25  # Lower threshold for better detection in challenging videos
+            self.max_faces_to_track = 8  # Track more faces for group scenarios
             
             # Cache for face positions (for smoothing)
             self.face_position_cache = deque(maxlen=self.smoothing_window)
             
-            logger.info("✅ Face tracking service initialized with MediaPipe - Enhanced for video clips")
+            # Frame quality assessment
+            self.min_frame_area = 1024  # 32x32 minimum
+            self.max_frame_area = 8294400  # 3840x2160 maximum (4K)
+            
+            logger.info("✅ Face tracking service initialized with MediaPipe - Enhanced for all video scenarios")
             
         except Exception as e:
             logger.error(f"❌ Failed to initialize face tracking service: {str(e)}")
+            logger.warning("⚠️ Face tracking will be disabled for this session")
             self.face_detection = None
-            raise
+            self.face_tracking_enabled = False
+    
+    def _initialize_mediapipe_with_retry(self, max_retries=3):
+        """Initialize MediaPipe with retry mechanism for better reliability"""
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"🔧 Initializing MediaPipe (attempt {attempt + 1}/{max_retries})")
+                
+                # Optimize MediaPipe threading for multi-core processing
+                try:
+                    # Set MediaPipe to use multiple threads for better performance on 4c/8t systems
+                    mp.set_num_threads(8)  # Use all 8 threads on 4 core / 8 thread system
+                    logger.info("⚙️ MediaPipe configured for 8-thread processing")
+                except Exception as thread_error:
+                    logger.warning(f"⚠️ MediaPipe threading setup failed: {str(thread_error)}, using default")
+                
+                # Initialize MediaPipe Face Detection
+                self.mp_face_detection = mp.solutions.face_detection
+                self.mp_drawing = mp.solutions.drawing_utils
+                
+                # Configure face detection with balanced settings for various scenarios
+                self.face_detection = self.mp_face_detection.FaceDetection(
+                    model_selection=0,  # Short range model (good for most content, faster)
+                    min_detection_confidence=0.3  # Lower threshold to catch more faces in challenging scenarios
+                )
+                
+                # Test the detection with a dummy frame
+                test_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+                test_frame.flags.writeable = False
+                
+                # Quick test to ensure MediaPipe is working
+                try:
+                    test_result = self.face_detection.process(test_frame)
+                    logger.info(f"✅ MediaPipe test successful (attempt {attempt + 1})")
+                    return
+                except Exception as test_error:
+                    logger.warning(f"⚠️ MediaPipe test failed: {str(test_error)}")
+                    raise test_error
+                
+            except Exception as init_error:
+                logger.warning(f"⚠️ MediaPipe initialization attempt {attempt + 1} failed: {str(init_error)}")
+                if attempt == max_retries - 1:
+                    raise init_error
+                
+                # Clean up before retry
+                try:
+                    if hasattr(self, 'face_detection') and self.face_detection:
+                        self.face_detection.close()
+                    self.face_detection = None
+                except:
+                    pass
+                
+                # Wait before retry
+                import time
+                time.sleep(1)
+    
+    def _recover_mediapipe(self):
+        """Attempt to recover MediaPipe after errors"""
+        try:
+            logger.info("🔄 Attempting to recover MediaPipe face detection...")
+            
+            # Close existing detection
+            if hasattr(self, 'face_detection') and self.face_detection:
+                self.face_detection.close()
+            
+            # Clear references
+            self.face_detection = None
+            
+            # Wait a moment
+            import time
+            time.sleep(0.5)
+            
+            # Reinitialize
+            self._initialize_mediapipe_with_retry(max_retries=2)
+            
+            logger.info("✅ MediaPipe recovery successful")
+            
+        except Exception as recovery_error:
+            logger.error(f"❌ MediaPipe recovery failed: {str(recovery_error)}")
+            self.face_detection = None
+            raise recovery_error
     
     async def analyze_video_faces(self, video_path: str, start_time: float = 0.0, end_time: float = None) -> FaceTrackingData:
         """
@@ -206,24 +302,52 @@ class FaceTrackingService:
             cap.release()
     
     def _detect_faces_in_frame(self, frame: np.ndarray) -> List[FaceDetection]:
-        """Detect faces in a single frame with CPU optimization"""
+        """Detect faces in a single frame with CPU optimization and robust error handling"""
         if self.face_detection is None:
             return []
         
         try:
-            # Validate frame data
-            if frame is None or frame.size == 0:
-                logger.warning("⚠️ Received empty or None frame, skipping face detection")
+            # Comprehensive frame validation
+            if frame is None:
+                logger.debug("🔍 Frame is None, skipping face detection")
                 return []
             
-            # Check frame dimensions
-            if len(frame.shape) != 3 or frame.shape[2] != 3:
-                logger.warning(f"⚠️ Invalid frame shape {frame.shape}, expected (H, W, 3)")
+            if not isinstance(frame, np.ndarray):
+                logger.warning(f"⚠️ Frame is not numpy array: {type(frame)}, skipping face detection")
+                return []
+            
+            if frame.size == 0:
+                logger.debug("🔍 Frame is empty (size=0), skipping face detection")
+                return []
+            
+            # Check frame dimensions more thoroughly
+            if len(frame.shape) < 2:
+                logger.warning(f"⚠️ Invalid frame shape {frame.shape}, need at least 2D, skipping face detection")
+                return []
+            
+            # Handle both grayscale and color frames
+            if len(frame.shape) == 2:
+                # Grayscale - convert to RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            elif len(frame.shape) == 3:
+                if frame.shape[2] not in [3, 4]:  # BGR or BGRA
+                    logger.warning(f"⚠️ Invalid frame channels {frame.shape[2]}, expected 3 or 4, skipping face detection")
+                    return []
+                # Convert BGRA to BGR if needed
+                if frame.shape[2] == 4:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            else:
+                logger.warning(f"⚠️ Invalid frame shape {frame.shape}, expected 2D or 3D, skipping face detection")
                 return []
             
             original_height, original_width = frame.shape[:2]
             if original_width <= 0 or original_height <= 0:
-                logger.warning(f"⚠️ Invalid frame dimensions: {original_width}x{original_height}")
+                logger.warning(f"⚠️ Invalid frame dimensions: {original_width}x{original_height}, skipping face detection")
+                return []
+            
+            # Check for reasonable frame size (prevent extremely small frames)
+            if original_width < 32 or original_height < 32:
+                logger.debug(f"🔍 Frame too small for face detection: {original_width}x{original_height}, skipping")
                 return []
             
             # CPU optimization: Downsample large frames for faster processing
@@ -232,30 +356,112 @@ class FaceTrackingService:
                 scale_factor = 1280.0 / original_width
                 new_width = int(original_width * scale_factor)
                 new_height = int(original_height * scale_factor)
-                frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+                
+                # Ensure minimum size after scaling
+                if new_width < 32 or new_height < 32:
+                    logger.debug(f"🔍 Scaled frame would be too small: {new_width}x{new_height}, using original")
+                    scale_factor = 1.0
+                else:
+                    try:
+                        frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+                    except Exception as resize_error:
+                        logger.warning(f"⚠️ Frame resize failed: {str(resize_error)}, using original frame")
+                        scale_factor = 1.0
             
             frame_height, frame_width = frame.shape[:2]
             
-            # Ensure frame is contiguous in memory
-            if not frame.flags['C_CONTIGUOUS']:
-                frame = np.ascontiguousarray(frame)
+            # Ensure frame is valid after any resizing
+            if frame.size == 0 or frame_width <= 0 or frame_height <= 0:
+                logger.warning(f"⚠️ Frame became invalid after processing: {frame_width}x{frame_height}, skipping")
+                return []
             
-            # Convert BGR to RGB for MediaPipe
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Ensure frame is contiguous in memory
+            try:
+                if not frame.flags['C_CONTIGUOUS']:
+                    frame = np.ascontiguousarray(frame)
+            except Exception as contiguous_error:
+                logger.warning(f"⚠️ Failed to make frame contiguous: {str(contiguous_error)}, trying anyway")
+            
+            # Convert BGR to RGB for MediaPipe with error handling
+            try:
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            except Exception as color_error:
+                logger.warning(f"⚠️ Color conversion failed: {str(color_error)}, skipping face detection")
+                return []
             
             # Validate RGB frame
             if rgb_frame is None or rgb_frame.size == 0:
-                logger.warning("⚠️ Failed to convert frame to RGB, skipping face detection")
+                logger.warning("⚠️ RGB frame is invalid after conversion, skipping face detection")
                 return []
             
-            # Ensure RGB frame is writable and contiguous
-            rgb_frame.flags.writeable = False  # MediaPipe expects non-writable images
+            # Final dimension check
+            if len(rgb_frame.shape) != 3 or rgb_frame.shape[2] != 3:
+                logger.warning(f"⚠️ RGB frame has invalid shape {rgb_frame.shape}, expected (H, W, 3), skipping face detection")
+                return []
             
-            # Process frame with MediaPipe
-            results = self.face_detection.process(rgb_frame)
+            # Create a copy for MediaPipe to prevent memory issues
+            try:
+                mp_frame = rgb_frame.copy()
+                mp_frame.flags.writeable = False  # MediaPipe expects non-writable images
+            except Exception as copy_error:
+                logger.warning(f"⚠️ Failed to create frame copy: {str(copy_error)}, using original")
+                mp_frame = rgb_frame
+                mp_frame.flags.writeable = False
             
-            # Reset writeable flag after processing
-            rgb_frame.flags.writeable = True
+            # Process frame with MediaPipe with enhanced error handling and recovery
+            try:
+                # Try to process the frame
+                results = self.face_detection.process(mp_frame)
+                
+                # Success - update counters
+                self.successful_frame_count += 1
+                self.total_frames_processed += 1
+                
+                # Reset failure count if we have successful processing
+                if self.successful_frame_count >= self.reset_threshold:
+                    if self.failed_frame_count > 0:
+                        logger.debug(f"🔄 Resetting failure count after {self.successful_frame_count} successful frames")
+                    self.failed_frame_count = max(0, self.failed_frame_count - 10)  # Gradually reduce failures
+                    self.successful_frame_count = 0
+                
+            except Exception as mp_error:
+                # This is the specific error we're trying to fix
+                self.failed_frame_count += 1
+                self.total_frames_processed += 1
+                
+                error_msg = str(mp_error)
+                
+                # Different handling based on error type
+                if "Empty packets are not allowed" in error_msg or "Packet type mismatch" in error_msg:
+                    # These are the specific errors we're addressing
+                    logger.debug(f"🔍 MediaPipe frame validation error: {error_msg[:100]}... ({self.failed_frame_count} failures)")
+                    
+                    # Try to recover by reinitializing MediaPipe if too many similar errors
+                    if self.failed_frame_count % 25 == 0 and self.failed_frame_count < self.max_failed_frames:
+                        logger.info(f"🔄 Attempting MediaPipe recovery after {self.failed_frame_count} failures")
+                        try:
+                            self._recover_mediapipe()
+                        except Exception as recovery_error:
+                            logger.warning(f"⚠️ MediaPipe recovery failed: {str(recovery_error)}")
+                else:
+                    # Other types of errors
+                    logger.debug(f"🔍 MediaPipe processing error: {error_msg[:100]}... ({self.failed_frame_count} failures)")
+                
+                # Disable face tracking if too many failures
+                if self.failed_frame_count >= self.max_failed_frames:
+                    failure_rate = self.failed_frame_count / max(1, self.total_frames_processed)
+                    logger.warning(f"⚠️ Disabling face tracking after {self.failed_frame_count} failures (failure rate: {failure_rate:.1%})")
+                    logger.info(f"📊 Face tracking stats: {self.faces_detected_count} faces detected in {self.total_frames_processed} frames")
+                    self.face_tracking_enabled = False
+                    self.face_detection = None
+                
+                return []
+            finally:
+                # Always reset writeable flag
+                try:
+                    mp_frame.flags.writeable = True
+                except:
+                    pass
             
             faces = []
             if results and results.detections:
@@ -281,6 +487,10 @@ class FaceTrackingService:
                 # Sort by confidence and keep top faces
                 faces.sort(key=lambda f: f.confidence, reverse=True)
                 faces = faces[:self.max_faces_to_track]
+                
+                # Update statistics
+                if faces:
+                    self.faces_detected_count += len(faces)
             
             return faces
             

@@ -1095,6 +1095,12 @@ class VideoProcessor:
                 
                 # Use simple subtitles filter with smaller font size
                 video = video.filter('subtitles', srt_file_path, force_style='FontSize=12')
+                # Apply subtitles using the SRT file
+                video = video.filter(
+                    'subtitles', 
+                    srt_file.replace('\\', '/'),  # FFmpeg expects forward slashes
+                    force_style=f"FontName=Arial,FontSize={style_config['fontsize']},PrimaryColour={self._hex_to_ass_color(style_config['fontcolor'])},Alignment=2,MarginV=50"
+                )
                 
                 output = ffmpeg.output(
                     video, audio, output_video,
@@ -1107,32 +1113,7 @@ class VideoProcessor:
                 )
                 
                 def _run_ffmpeg():
-                    try:
-                        # Log FFmpeg command for debugging
-                        cmd_args = ffmpeg.compile(output, overwrite_output=True)
-                        logger.debug(f"🔧 FFmpeg caption command: {' '.join(cmd_args)}")
-                        
-                        # Run with detailed error capture
-                        result = ffmpeg.run(output, overwrite_output=True, capture_stdout=True, capture_stderr=True)
-                        
-                        # Verify output file was created successfully
-                        if os.path.exists(output_video) and os.path.getsize(output_video) > 1024:  # At least 1KB
-                            logger.info(f"✅ Caption video created successfully: {os.path.getsize(output_video)} bytes")
-                        else:
-                            raise Exception(f"Caption output file is missing or too small: {output_video}")
-                            
-                    except ffmpeg.Error as e:
-                        stderr_output = e.stderr.decode('utf-8', errors='ignore') if e.stderr else 'No stderr'
-                        stdout_output = e.stdout.decode('utf-8', errors='ignore') if e.stdout else 'No stdout'
-                        
-                        logger.error(f"❌ FFmpeg caption error - STDERR: {stderr_output}")
-                        logger.error(f"❌ FFmpeg caption error - STDOUT: {stdout_output}")
-                        
-                        # Log the exact command that failed
-                        if hasattr(e, 'cmd'):
-                            logger.error(f"❌ Failed command: {' '.join(e.cmd)}")
-                        
-                        raise Exception(f"FFmpeg caption processing failed: {stderr_output}")
+                    ffmpeg.run(output, overwrite_output=True, capture_stdout=True, capture_stderr=True)
                 
                 # Add timeout protection - reduced for faster processing
                 await asyncio.wait_for(

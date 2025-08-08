@@ -4,12 +4,103 @@ import logging
 import asyncio
 import json
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import random
 import time
 from .cookie_manager import cookie_manager
 
 logger = logging.getLogger(__name__)
+
+class YouTubeRateLimitManager:
+    """Manages YouTube rate limiting to prevent API abuse"""
+    
+    def __init__(self):
+        self.last_request_time = 0
+        self.request_count = 0
+        self.rate_limited_until = None
+        self.consecutive_failures = 0
+        self.base_delay = 2.0  # Base delay between requests
+        self.max_delay = 300.0  # Maximum delay (5 minutes)
+        self.requests_per_hour = 50  # Conservative limit
+        self.request_times = []  # Track request times for rate limiting
+    
+    def is_rate_limited(self) -> bool:
+        """Check if we're currently rate limited"""
+        if self.rate_limited_until:
+            if datetime.now() < self.rate_limited_until:
+                return True
+            else:
+                # Rate limit period has expired
+                self.rate_limited_until = None
+                self.consecutive_failures = 0
+        return False
+    
+    def get_delay_time(self) -> float:
+        """Calculate delay time based on recent activity"""
+        now = time.time()
+        
+        # Clean old request times (older than 1 hour)
+        hour_ago = now - 3600
+        self.request_times = [t for t in self.request_times if t > hour_ago]
+        
+        # Check if we're approaching rate limits
+        if len(self.request_times) >= self.requests_per_hour:
+            # We're at the rate limit, use longer delay
+            delay = self.base_delay * (2 ** min(self.consecutive_failures, 5))
+            return min(delay, self.max_delay)
+        
+        # Calculate delay based on recent activity
+        if self.request_times:
+            time_since_last = now - max(self.request_times)
+            if time_since_last < self.base_delay:
+                return self.base_delay - time_since_last
+        
+        # Add exponential backoff for consecutive failures
+        if self.consecutive_failures > 0:
+            backoff_delay = self.base_delay * (1.5 ** self.consecutive_failures)
+            return min(backoff_delay, self.max_delay)
+        
+        return self.base_delay
+    
+    async def wait_for_next_request(self):
+        """Wait appropriate time before next request"""
+        if self.is_rate_limited():
+            wait_time = (self.rate_limited_until - datetime.now()).total_seconds()
+            logger.warning(f"⏳ Rate limited for {wait_time:.0f} seconds")
+            await asyncio.sleep(wait_time)
+        
+        delay = self.get_delay_time()
+        if delay > 0:
+            logger.info(f"⏱️ Waiting {delay:.1f}s before YouTube request (rate limiting)")
+            await asyncio.sleep(delay)
+    
+    def record_request(self):
+        """Record a successful request"""
+        self.request_times.append(time.time())
+        self.consecutive_failures = 0
+    
+    def record_failure(self, error_msg: str = ""):
+        """Record a failed request and adjust rate limiting"""
+        self.consecutive_failures += 1
+        
+        # Check for rate limiting indicators
+        if any(indicator in error_msg.lower() for indicator in [
+            'rate limit', 'too many requests', 'try again later', 
+            'temporarily unavailable', '429', 'quota exceeded'
+        ]):
+            # Set rate limit for 1 hour with exponential backoff
+            backoff_minutes = min(60 * (1.5 ** (self.consecutive_failures - 1)), 120)
+            self.rate_limited_until = datetime.now() + timedelta(minutes=backoff_minutes)
+            logger.warning(f"🚫 YouTube rate limit detected! Backing off for {backoff_minutes:.0f} minutes")
+    
+    def reset(self):
+        """Reset rate limiting state"""
+        self.consecutive_failures = 0
+        self.rate_limited_until = None
+        logger.info("✅ Rate limiting state reset")
+
+# Global rate limit manager instance
+rate_limit_manager = YouTubeRateLimitManager()
 
 class YouTubeDownloader:
     def __init__(self):
@@ -153,10 +244,14 @@ class YouTubeDownloader:
             return opts
     
     async def get_video_info(self, url: str) -> Dict[str, Any]:
-        """Get video information without downloading with improved strategies"""
+        """Get video information without downloading with improved strategies and rate limiting"""
         try:
             if not self.is_valid_youtube_url(url):
                 raise Exception("Invalid YouTube URL format")
+            
+            # Apply rate limiting before making request
+            logger.info("⏳ Checking YouTube rate limits before video info request...")
+            await rate_limit_manager.wait_for_next_request()
             
             # Check and refresh cookies if needed (runs in background)
             try:
@@ -231,12 +326,19 @@ class YouTubeDownloader:
             loop = asyncio.get_event_loop()
             info = await loop.run_in_executor(None, _get_info)
             
-            logger.info(f"Successfully got video info for: {info['title']}")
+            # Record successful request for rate limiting
+            rate_limit_manager.record_request()
+            logger.info(f"✅ Successfully got video info for: {info['title']}")
             return info
             
         except Exception as e:
-            logger.error(f"Error getting video info for URL {url}: {str(e)}")
-            raise Exception(f"Failed to get video information: {str(e)}")
+            error_msg = str(e)
+            logger.error(f"Error getting video info for URL {url}: {error_msg}")
+            
+            # Record failure for rate limiting
+            rate_limit_manager.record_failure(error_msg)
+            
+            raise Exception(f"Failed to get video information: {error_msg}")
     
     async def download_video(self, url: str, job_id: str) -> str:
         """Download video from YouTube URL with multiple strategies and comprehensive error logging"""
@@ -247,6 +349,10 @@ class YouTubeDownloader:
         error_logger = self._create_enhanced_download_error_logger(request_id)
         
         try:
+            # Apply rate limiting before download
+            logger.info(f"⏳ [{request_id}] Checking rate limits before YouTube download...")
+            await rate_limit_manager.wait_for_next_request()
+            
             # Get video info first
             info = await self.get_video_info(url)
             video_id = info.get('video_id', 'unknown')
@@ -290,6 +396,9 @@ class YouTubeDownloader:
                         strategy_results.append(success_info)
                         
                         logger.info(f"✅ Download successful with {strategy_name} in {elapsed_time:.1f}s ({file_size:.1f}MB)")
+                        
+                        # Record successful download for rate limiting
+                        rate_limit_manager.record_request()
                         
                         # Log all strategy results for user feedback
                         self._log_strategy_results(job_id, strategy_results)
@@ -390,17 +499,21 @@ class YouTubeDownloader:
             raise Exception(f"All {len(strategies)} download strategies failed: {', '.join(failed_strategies)}")
             
         except Exception as e:
-            logger.error(f"Error downloading video: {str(e)}")
+            error_msg = str(e)
+            logger.error(f"Error downloading video: {error_msg}")
             import traceback
             error_traceback = traceback.format_exc()
             logger.error(f"Download error traceback:\n{error_traceback}")
+            
+            # Record download failure for rate limiting
+            rate_limit_manager.record_failure(error_msg)
             
             # Enhanced failure logging
             if strategy_results:
                 self._log_strategy_results(job_id, strategy_results)
                 error_logger.log_critical_download_failure(e, url, strategy_results)
             
-            raise Exception(f"Failed to download video: {str(e)}")
+            raise Exception(f"Failed to download video: {error_msg}")
     
     async def _download_simple(self, url: str, job_id: str, video_id: str) -> Optional[str]:
         """Simple download with cookies - often works best"""
