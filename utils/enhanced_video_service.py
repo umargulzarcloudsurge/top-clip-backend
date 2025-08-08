@@ -418,7 +418,7 @@ class EnhancedVideoService:
         # Strategy 3: Time-based fallback highlights
         start_time = datetime.now()
         logger.info(f"⏰ [{request_id}] Using time-based fallback highlights")
-        highlights = await self._create_time_based_highlights(options, video_duration, request_id)
+        highlights = self._create_time_based_highlights(options, video_duration, request_id)
         elapsed = (datetime.now() - start_time).total_seconds()
         
         strategy_results.append({
@@ -721,7 +721,7 @@ class EnhancedVideoService:
             logger.error(f"❌ Failed to log strategy summary: {str(summary_error)}")
             print(f"\n❌ Failed to log strategy summary: {str(summary_error)}")
     
-    async def _create_time_based_highlights(
+    def _create_time_based_highlights(
         self,
         options: ProcessingOptions,
         video_duration: float,
