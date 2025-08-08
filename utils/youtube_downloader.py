@@ -271,9 +271,16 @@ class YouTubeDownloader:
             if not self.is_valid_youtube_url(url):
                 raise Exception("Invalid YouTube URL format")
             
-            # Apply rate limiting before making request
+            # Apply enhanced rate limiting before making request
             logger.info("⏳ Checking YouTube rate limits before video info request...")
             await rate_limit_manager.wait_for_next_request()
+            
+            # Check if we've been rate limited recently
+            if hasattr(rate_limit_manager, 'is_rate_limited') and rate_limit_manager.is_rate_limited():
+                cooldown_time = rate_limit_manager.get_cooldown_remaining()
+                if cooldown_time > 0:
+                    logger.warning(f"🚫 Rate limit active, waiting {cooldown_time:.0f}s before proceeding")
+                    await asyncio.sleep(min(cooldown_time, 60))  # Max 60 seconds wait
             
             # Check and refresh cookies if needed (runs in background)
             try:

@@ -53,38 +53,42 @@ video_processor = None
 youtube_downloader = None
 clip_analyzer = None
 
+# Global components with thread-safe initialization
+components_lock = threading.Lock()
+components_initialized = False
+
 def get_components():
-    global job_manager, video_processor, youtube_downloader, clip_analyzer
+    global job_manager, video_processor, youtube_downloader, clip_analyzer, components_initialized
 
-    if job_manager is None:
-        try:
-            logger.info("🔧 Initializing components...")
-            from utils.job_manager import JobManager
-            from utils.video_processor import VideoProcessor
-            from utils.youtube_downloader import YouTubeDownloader
-            from utils.clip_analyzer import ClipAnalyzer
-            
-            logger.info("📦 Imports successful, creating instances...")
-            job_manager = JobManager()
-            logger.info("✅ JobManager created")
-            video_processor = VideoProcessor()
-            logger.info("✅ VideoProcessor created")
-            youtube_downloader = YouTubeDownloader()
-            logger.info("✅ YouTubeDownloader created")
-            clip_analyzer = ClipAnalyzer()
-            logger.info("✅ ClipAnalyzer created")
-
-            
-
-            
-            logger.info("✅ All components initialized successfully")
-        except Exception as e:
-            logger.error(f"❌ CRITICAL: Failed to initialize components: {str(e)}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
-            raise e
-    else:
-        logger.debug("♻️ Using existing components")
+    # Thread-safe initialization
+    with components_lock:
+        if not components_initialized:
+            try:
+                logger.info("🔧 Initializing components with thread-safe singleton pattern...")
+                from utils.job_manager import JobManager
+                from utils.video_processor import VideoProcessor
+                from utils.youtube_downloader import YouTubeDownloader
+                from utils.clip_analyzer import ClipAnalyzer
+                
+                logger.info("📦 Imports successful, creating singleton instances...")
+                job_manager = JobManager()
+                logger.info("✅ JobManager created")
+                video_processor = VideoProcessor()
+                logger.info("✅ VideoProcessor created")
+                youtube_downloader = YouTubeDownloader()
+                logger.info("✅ YouTubeDownloader created")
+                clip_analyzer = ClipAnalyzer()
+                logger.info("✅ ClipAnalyzer created")
+                
+                components_initialized = True
+                logger.info("✅ All components initialized successfully")
+            except Exception as e:
+                logger.error(f"❌ CRITICAL: Failed to initialize components: {str(e)}")
+                import traceback
+                logger.error(f"Full traceback: {traceback.format_exc()}")
+                raise e
+        else:
+            logger.debug("♻️ Using existing singleton components")
     
     # Validate components before returning
     logger.debug(f"🔍 Component validation: job_manager={job_manager is not None}, video_processor={video_processor is not None}, youtube_downloader={youtube_downloader is not None}, clip_analyzer={clip_analyzer is not None}")
