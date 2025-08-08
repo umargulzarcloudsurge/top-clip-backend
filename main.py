@@ -12,6 +12,9 @@ import logging
 from pydantic import BaseModel, ValidationError
 import aiofiles
 import shutil
+import threading
+import concurrent.futures
+import multiprocessing
 from dotenv import load_dotenv
 from utils.config import config
 load_dotenv()
@@ -162,9 +165,7 @@ for logger_name in ['urllib3', 'httpx', 'ffmpeg', 'yt_dlp', 'httpcore', 'hpack',
 logger = logging.getLogger(__name__)
 
 # Configure thread pool for CPU-intensive operations to prevent blocking
-import concurrent.futures
-import threading
-import multiprocessing
+# (imports moved to top of file)
 
 # Detect system capabilities with safety checks
 try:
