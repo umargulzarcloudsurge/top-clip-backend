@@ -1089,37 +1089,12 @@ class VideoProcessor:
                 # Convert Windows path to proper format for FFmpeg
                 srt_file_path = srt_file.replace('\\', '/')
                 
-                # Enhanced subtitle styling with better visibility
-                subtitle_style = (
-                    f"FontName=Arial Bold,"
-                    f"FontSize={max(style_config['fontsize'], 36)},"
-                    f"PrimaryColour={self._hex_to_ass_color(style_config['fontcolor'])},"
-                    f"OutlineColour=&H00000000,"
-                    f"BackColour=&H80000000,"
-                    f"Bold=1,"
-                    f"Italic=0,"
-                    f"Underline=0,"
-                    f"StrikeOut=0,"
-                    f"ScaleX=100,"
-                    f"ScaleY=100,"
-                    f"Spacing=0,"
-                    f"Angle=0,"
-                    f"BorderStyle=1,"
-                    f"Outline=3,"
-                    f"Shadow=2,"
-                    f"Alignment=2,"
-                    f"MarginL=20,"
-                    f"MarginR=20,"
-                    f"MarginV=80"
-                )
+                # Simplified subtitle styling - much faster processing
+                # Use basic drawtext filter for better performance and reliability
+                logger.info(f"🎨 Applying subtitles with simplified styling for {style}...")
                 
-                logger.info(f"🎨 Applying subtitles with enhanced styling: {subtitle_style[:100]}...")
-                
-                video = video.filter(
-                    'subtitles', 
-                    srt_file_path,
-                    force_style=subtitle_style
-                )
+                # Use simple subtitles filter with smaller font size
+                video = video.filter('subtitles', srt_file_path, force_style='FontSize=12')
                 
                 output = ffmpeg.output(
                     video, audio, output_video,
@@ -1159,10 +1134,10 @@ class VideoProcessor:
                         
                         raise Exception(f"FFmpeg caption processing failed: {stderr_output}")
                 
-                # Add timeout protection
+                # Add timeout protection - reduced for faster processing
                 await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(None, _run_ffmpeg),
-                    timeout=480  # 8 minute timeout for subtitle processing
+                    timeout=120  # 2 minute timeout for subtitle processing
                 )
                 
                 logger.info("✅ Captions added successfully with SRT subtitles")
@@ -1178,7 +1153,7 @@ class VideoProcessor:
                         logger.warning(f"⚠️ Failed to cleanup SRT file: {cleanup_error}")
             
         except asyncio.TimeoutError:
-            logger.error("❌ Caption rendering timed out after 8 minutes")
+            logger.error("❌ Caption rendering timed out after 2 minutes")
             return False
         except Exception as e:
             logger.error(f"❌ Error adding captions with FFmpeg: {str(e)}")
