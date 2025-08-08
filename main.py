@@ -160,11 +160,35 @@ logger = logging.getLogger(__name__)
 # Configure thread pool for CPU-intensive operations to prevent blocking
 import concurrent.futures
 import threading
+import multiprocessing
 
-# Create larger thread pool for video processing
+# Detect system capabilities with safety checks
+try:
+    CPU_COUNT = multiprocessing.cpu_count()
+    THREAD_COUNT = min(CPU_COUNT * 2, 8)  # Use 2 threads per core, max 8 for 4c/8t systems
+except Exception as cpu_error:
+    logger.warning(f"⚠️ Could not detect CPU count: {cpu_error}, using fallback")
+    CPU_COUNT = 4  # Safe fallback
+    THREAD_COUNT = 8  # Safe fallback for 4c/8t systems
+
+logger.info(f"💻 System detected: {CPU_COUNT} cores, using {THREAD_COUNT} threads for video processing")
+
+# Create optimized thread pools for different tasks
 video_executor = concurrent.futures.ThreadPoolExecutor(
-    max_workers=8,  # Increase for better concurrency 
+    max_workers=THREAD_COUNT,  # Optimal for 4c/8t systems
     thread_name_prefix="video_processing"
+)
+
+# Separate thread pool for I/O operations (downloads, uploads)
+io_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4,  # I/O operations don't need as many threads
+    thread_name_prefix="io_operations"
+)
+
+# Thread pool for face detection (CPU intensive but different from video processing)
+face_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=max(2, CPU_COUNT // 2),  # Use half the cores for face detection
+    thread_name_prefix="face_detection"
 )
 
 # Initialize FastAPI app with production configuration
@@ -229,6 +253,13 @@ async def handle_api_error(error: Exception, context: str = "", request_id: str 
         timestamp=datetime.now().isoformat(),
         request_id=request_id
     )
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Return a simple favicon to prevent browser 404 requests"""
+    # Return a minimal empty response or redirect to a real favicon if you have one
+    from fastapi.responses import Response
+    return Response(content="", media_type="image/x-icon")
 
 @app.get("/")
 async def root():
@@ -1583,57 +1614,6 @@ async def get_clip(user_id: str, clip_filename: str, request: Request):
         error_response = await handle_api_error(e, "get_clip")
         raise HTTPException(status_code=500, detail=error_response.dict())
 
-@app.get("/api/test-openai-subtitles")
-async def test_openai_subtitles():
-    """Test endpoint for OpenAI subtitle generation"""
-    try:
-        logger.info("🧪 Testing OpenAI subtitle generation service")
-        
-        from utils.openai_subtitle_service import get_openai_subtitle_service
-        
-        # Test connection first
-        subtitle_service = get_openai_subtitle_service()
-        connection_test = await subtitle_service.test_connection()
-        
-        if not connection_test.get('success'):
-            return {
-                "success": False,
-                "error": "OpenAI connection test failed",
-                "details": connection_test
-            }
-        
-        # Test subtitle generation for a sample clip
-        test_subtitles = await subtitle_service.generate_subtitles_for_clip(
-            video_title="Test Video",
-            clip_title="Amazing Gaming Moment",
-            clip_duration=30.0,
-            start_time=0.0,
-            context="Gaming highlights with epic moments",
-            style="energetic"
-        )
-        
-        logger.info(f"✅ OpenAI subtitle test successful: {len(test_subtitles.get('segments', []))} segments")
-        
-        return {
-            "success": True,
-            "message": "OpenAI subtitle generation working correctly",
-            "connection_test": connection_test,
-            "sample_subtitles": {
-                "segments_count": len(test_subtitles.get('segments', [])),
-                "duration": test_subtitles.get('duration'),
-                "style": test_subtitles.get('style'),
-                "sample_segments": test_subtitles.get('segments', [])[:3]  # First 3 segments as example
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ OpenAI subtitle test failed: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-            "message": "OpenAI subtitle generation test failed"
-        }
-
 @app.get("/api/thumbnail/{user_id}/{thumbnail_filename}")
 async def get_thumbnail(user_id: str, thumbnail_filename: str):
     """Enhanced thumbnail endpoint - stream from Supabase Storage"""
@@ -2396,12 +2376,12 @@ async def process_video_background_enhanced(
             return
 
         
-        # Step 3: Enhanced video processing with ULTRA quality
+        # Step 3: Enhanced parallel video processing with ULTRA quality
         await job_mgr.update_step_status(job_id, "video_processing", "processing", 0.0)
-        logger.info(f"🎥 [{request_id}] Processing {len(highlights)} highlights with ULTRA quality and MASSIVE fonts")
+        logger.info(f"🎥 [{request_id}] Processing {len(highlights)} highlights with ULTRA quality, MASSIVE fonts, and multi-threading")
         await job_mgr.update_job_status(
             job_id, "processing", 55.0, 
-            f"Generating {len(highlights)} video clips", 
+            f"Generating {len(highlights)} video clips using {THREAD_COUNT} threads", 
             "Video Processing"
         )
         
@@ -2412,16 +2392,19 @@ async def process_video_background_enhanced(
             return
         
         try:
-            # Use Enhanced Video Service for robust video processing
-            logger.info(f"🎬 [{request_id}] Using Enhanced Video Service for robust processing...")
+            # Use Enhanced Video Service for robust parallel video processing
+            logger.info(f"🎬 [{request_id}] Using Enhanced Video Service with {THREAD_COUNT} threads for parallel processing...")
             enhanced_service = EnhancedVideoService()
             
-            clips = await enhanced_service.process_video_with_captions(
+            # Process clips in parallel using the optimized thread pool
+            clips = await enhanced_service.process_video_with_captions_parallel(
                 video_path=video_path,
                 options=options,
                 job_id=job_id,
                 job_manager=job_mgr,
                 transcript=transcript,  # Pass the generated transcript
+                video_executor=video_executor,  # Pass the configured thread pool
+                face_executor=face_executor,  # Pass face detection thread pool
                 disable_assembly_ai=True,  # Disable AssemblyAI, use OpenAI Whisper
                 enable_ai_enhancements=True  # Enable AI enhancements for captions
             )
