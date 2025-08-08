@@ -99,8 +99,15 @@ class TranscriptionService:
         try:
             # Quick health check - list models with short timeout
             def _health_check():
-                models = list(self.client.models.list())
-                return len(models) > 0
+                if CLIENT_TYPE == 'v1':
+                    models = list(self.client.models.list())
+                    return len(models) > 0
+                elif CLIENT_TYPE == 'v0':
+                    # For v0, we can't easily check models, so just return True
+                    # Health check will be implicit when making actual transcription calls
+                    return True
+                else:
+                    return False
             
             healthy = await asyncio.get_event_loop().run_in_executor(None, _health_check)
             if not healthy:
@@ -290,6 +297,7 @@ class TranscriptionService:
                 def _transcribe():
                     with open(audio_path, 'rb') as audio_file:
                         if CLIENT_TYPE == 'v1':
+                            # OpenAI v1.x API
                             response = self.client.audio.transcriptions.create(
                                 model="whisper-1",
                                 file=audio_file,
@@ -297,45 +305,101 @@ class TranscriptionService:
                                 response_format="verbose_json",
                                 timestamp_granularities=["word", "segment"]
                             )
+                        elif CLIENT_TYPE == 'v0':
+                            # OpenAI v0.x API
+                            response = openai.Audio.transcribe(
+                                model="whisper-1",
+                                file=audio_file,
+                                language=language,
+                                response_format="verbose_json"
+                            )
+                        else:
+                            raise ValueError(f"Unsupported OpenAI client type: {CLIENT_TYPE}")
                         
-                        # Process v1 response
+                        # Process response (handle both v1 and v0 structures)
                         segments = []
                         words = []
                         
-                        for segment in response.segments:
-                            seg_data = {
-                                'start': segment.start,
-                                'end': segment.end,
-                                'text': segment.text,
-                                'words': []
-                            }
+                        # Handle different response formats
+                        if CLIENT_TYPE == 'v1':
+                            # v1 API response object
+                            response_segments = response.segments
+                        else:
+                            # v0 API response dict
+                            response_segments = response.get('segments', [])
+                        
+                        for segment in response_segments:
+                            # Handle both object attributes and dict access
+                            if hasattr(segment, 'start'):
+                                # v1 API object
+                                seg_data = {
+                                    'start': segment.start,
+                                    'end': segment.end,
+                                    'text': segment.text,
+                                    'words': []
+                                }
+                            else:
+                                # v0 API dict
+                                seg_data = {
+                                    'start': segment.get('start', 0),
+                                    'end': segment.get('end', 0),
+                                    'text': segment.get('text', ''),
+                                    'words': []
+                                }
                             
                             # Add word data to segment if available
-                            if hasattr(segment, 'words'):
-                                for word in segment.words:
-                                    word_data = {
-                                        'start': word.start,
-                                        'end': word.end,
-                                        'text': word.word,
-                                        'word': word.word
-                                    }
+                            segment_words = getattr(segment, 'words', segment.get('words', [])) if hasattr(segment, 'words') or isinstance(segment, dict) else []
+                            
+                            if segment_words:
+                                for word in segment_words:
+                                    if hasattr(word, 'start'):
+                                        # v1 API object
+                                        word_data = {
+                                            'start': word.start,
+                                            'end': word.end,
+                                            'text': getattr(word, 'word', getattr(word, 'text', '')),
+                                            'word': getattr(word, 'word', getattr(word, 'text', ''))
+                                        }
+                                    else:
+                                        # v0 API dict
+                                        word_data = {
+                                            'start': word.get('start', 0),
+                                            'end': word.get('end', 0),
+                                            'text': word.get('word', word.get('text', '')),
+                                            'word': word.get('word', word.get('text', ''))
+                                        }
                                     seg_data['words'].append(word_data)
                                     words.append(word_data)
                             
                             segments.append(seg_data)
                         
                         # Also collect top-level words if available
-                        if hasattr(response, 'words') and response.words:
-                            for word in response.words:
-                                words.append({
-                                    'start': word.start,
-                                    'end': word.end,
-                                    'text': word.word,
-                                    'word': word.word
-                                })
+                        top_level_words = getattr(response, 'words', response.get('words', [])) if hasattr(response, 'words') or isinstance(response, dict) else []
+                        
+                        if top_level_words:
+                            for word in top_level_words:
+                                if hasattr(word, 'start'):
+                                    # v1 API object
+                                    words.append({
+                                        'start': word.start,
+                                        'end': word.end,
+                                        'text': getattr(word, 'word', getattr(word, 'text', '')),
+                                        'word': getattr(word, 'word', getattr(word, 'text', ''))
+                                    })
+                                else:
+                                    # v0 API dict
+                                    words.append({
+                                        'start': word.get('start', 0),
+                                        'end': word.get('end', 0),
+                                        'text': word.get('word', word.get('text', '')),
+                                        'word': word.get('word', word.get('text', ''))
+                                    })
+                        
+                        # Get response text (handle both v1 and v0 formats)
+                        response_text = getattr(response, 'text', response.get('text', '')) if hasattr(response, 'text') or isinstance(response, dict) else ''
                         
                         return {
-                            'text': response.text,
+                            'text': response_text,
                             'segments': segments,
                             'words': words
                         }
