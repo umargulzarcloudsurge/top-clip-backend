@@ -1,0 +1,46 @@
+# TopClip Backend Systemd Service File
+# Copy this file to: /etc/systemd/system/topclip-backend.service
+
+[Unit]
+Description=TopClip AI Backend API
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/topclip-backend
+Environment=PATH=/home/ubuntu/topclip-backend/venv/bin
+Environment=PYTHONPATH=/home/ubuntu/topclip-backend
+EnvironmentFile=/home/ubuntu/topclip-backend/.env
+ExecStart=/home/ubuntu/topclip-backend/venv/bin/python main.py
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+TimeoutStopSec=5
+PrivateTmp=true
+Restart=always
+RestartSec=10
+
+# Resource limits for AWS instances
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Security settings
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/ubuntu/topclip-backend/temp /home/ubuntu/topclip-backend/output /home/ubuntu/topclip-backend/thumbnails /home/ubuntu/topclip-backend/logs
+PrivateDevices=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+[Install]
+WantedBy=multi-user.target
