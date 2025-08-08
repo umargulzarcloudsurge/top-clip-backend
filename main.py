@@ -58,15 +58,15 @@ def get_components():
 
     if job_manager is None:
         try:
-            logger.info("🔧 Initializing components with Redis support...")
-            from utils.enhanced_job_manager import EnhancedJobManager
+            logger.info("🔧 Initializing components...")
+            from utils.job_manager import JobManager
             from utils.video_processor import VideoProcessor
             from utils.youtube_downloader import YouTubeDownloader
             from utils.clip_analyzer import ClipAnalyzer
             
             logger.info("📦 Imports successful, creating instances...")
-            job_manager = EnhancedJobManager()
-            logger.info("✅ EnhancedJobManager created with Redis persistence")
+            job_manager = JobManager()
+            logger.info("✅ JobManager created")
             video_processor = VideoProcessor()
             logger.info("✅ VideoProcessor created")
             youtube_downloader = YouTubeDownloader()
